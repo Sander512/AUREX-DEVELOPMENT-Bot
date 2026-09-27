@@ -1,169 +1,95 @@
-# AUREX DEVELOPMENT — Development Shop Bot + Dashboard
+# Aurex | Development
 
-**Deserve All Right.**
+Discord bot + webdashboard voor een dev shop server: **tickets**, **welkomstbericht**,
+**verificatie** en **regels** — allemaal in te stellen via zowel Discord slash
+commands als het dashboard.
 
-## Architectuur
+## Features
 
-E�n service (`bot/`) draait **zowel de Discord-bot als de dashboard-website**
-in hetzelfde proces, via `server.js`:
+- **🎫 Tickets** — configureerbaar paneel met meerdere ticket-types (bv. Bestelling,
+  Support, Klacht), claim/close-knoppen, transcript-logging, per-type categorie & rol.
+- **👋 Welkomstbericht** — bericht + embed + optionele auto-rol + optionele DM
+  zodra iemand joint. Placeholders: `{user}`, `{username}`, `{server}`, `{membercount}`.
+- **🔐 Verificatie** — één-klik verify-knop die direct een ingestelde rol toekent.
+  Geen account-koppeling of code nodig.
+- **📜 Regels** — configureerbare regels-embed, met `/rules-send` te (her)plaatsen;
+  nogmaals uitvoeren werkt het bestaande bericht bij in plaats van te spammen.
+- **Dashboard** — login met Discord, kies een server waar je "Manage Server" rechten
+  hebt, en stel alles hierboven in met live preview.
 
-- `server.js` start een Next.js-server (voor `/`, `/dashboard/*`, `/api/*`)
-  én logt tegelijk de Discord-bot in — allebei op dezelfde poort/dezelfde URL.
-- Klik je op de knop van `/dashboard` in Discord, dan land je op
-  `https://<jouw-app>.onrender.com/dashboard/<guildId>` — dus letterlijk
-  dezelfde plek als waar de bot draait, met `/dashboard` erachter.
-
-Structuur:
+## Projectstructuur
 
 ```
-bot/
-  server.js              ← entrypoint: start web + bot samen
-  src/                    ← alle Discord-botcode (commands, events, handlers)
-    bot.js                ← startBot(): client aanmaken, inloggen
-    index.js               ← losstaande bot-only entrypoint (lokaal testen)
-  app/                    ← Next.js dashboard (App Router)
-    dashboard/              ← /dashboard?guild=<id>, /dashboard/products?guild=<id>, ...
-    api/
-      auth/[...nextauth]/   ← enige map met haken in het hele project (verplicht door NextAuth)
-      products/, orders/, settings/   ← vlakke API-routes, guildId gaat via query/body
-  components/             ← React-componenten voor het dashboard
-  lib/                    ← auth.js, permissions.js, pageGuard.js, discord.js, prisma.js
-  prisma/schema.prisma    ← gedeeld datamodel voor bot én dashboard
+api/          Express API — auth, database, alle /config routes voor het dashboard
+bot/          Discord bot — commands, event handlers, embed/permissie-helpers
+public/       Statische dashboard front-end (vanilla HTML/CSS/JS)
+start.js      Combined entry point (API + bot in 1 proces — zie hieronder)
 ```
 
-Let op: het dashboard gebruikt `/dashboard?guild=<id>` (een **query-parameter**), niet
-`/dashboard/<id>/...` — dat is bewust zo gekozen zodat bijna geen enkele map in dit
-project vierkante haken (`[...]`) in de naam heeft. Dat maakt uploaden via GitHub's
-webinterface (drag-and-drop) een stuk minder foutgevoelig, omdat alleen de
-NextAuth-inlogmap (`app/api/auth/[...nextauth]/`) die naamgeving nog vereist.
+## Snel starten
 
-## Rechten in het dashboard
+1. **Installeer dependencies**
+   ```bash
+   npm install
+   ```
 
-Bij elk bezoek aan `/dashboard/<guildId>` haalt de server via de **bot-token**
-de rollen van de ingelogde gebruiker op in die Discord-server, matcht die
-tegen `StaffPermission` in de database, en toont alleen de secties waar die
-rol rechten voor heeft. De Discord-server-eigenaar heeft altijd volledige
-toegang. Geen staff-rol = geen toegang, met duidelijke melding. Elke
-API-route herhaalt deze check server-side (nooit alleen op de UI vertrouwen).
+2. **Kopieer `.env.example` naar `.env`** en vul in:
+   - `DISCORD_TOKEN`, `DISCORD_CLIENT_ID` — uit het [Discord Developer Portal](https://discord.com/developers/applications)
+   - `DISCORD_CLIENT_SECRET` + een redirect `<PUBLIC_URL>/auth/discord/callback` onder OAuth2
+   - `API_KEY` — een willekeurige lange string (bot ↔ API authenticatie)
+   - `SESSION_SECRET` — genereer met `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+   - `PUBLIC_URL` — waar de app bereikbaar is (lokaal: `http://localhost:3000`)
+   - Database: laat `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` leeg voor een lokaal
+     SQLite-bestand, of vul ze in voor [Turso](https://turso.tech) (aanbevolen voor
+     hosting op Render, omdat data dan niet verdwijnt bij een redeploy).
 
-## Database: Turso (libSQL)
+3. **Zorg dat de bot de juiste Discord-permissies + intents heeft**
+   In het Developer Portal, tabblad "Bot": zet **Server Members Intent** aan
+   (nodig voor het welkomstbericht). Nodig bij het uitnodigen: `Manage Roles`,
+   `Manage Channels`, `Send Messages`, `Embed Links`.
 
-Dit project gebruikt **Turso** in plaats van Postgres. Omdat Turso op SQLite
-is gebaseerd, ondersteunt het geen native arrays, JSON-kolommen of enums —
-die velden zijn daarom in het schema gewone `String`-kolommen die JSON-tekst
-bevatten (bv. `features` op een product), met kleine helpers in `lib/json.js`
-(`parseJson` / `toJsonString`) om dat om te zetten in de code. "Enums" (zoals
-orderstatussen) zijn nu gewoon strings — dezelfde waarden als voorheen (bv.
-`"PENDING"`, `"PAID"`), alleen zonder database-afdwinging.
+4. **Start alles in één proces** (handig voor hosting op één service, bv. Render):
+   ```bash
+   node start.js
+   ```
+   Dit registreert automatisch alle slash commands én start de API + bot samen.
 
-### Turso-database aanmaken
+   Los draaien kan ook:
+   ```bash
+   npm run api      # start alleen de Express API
+   npm start        # start alleen de Discord bot
+   npm run deploy   # registreer slash commands handmatig
+   ```
 
-```bash
-# eenmalig, als je de Turso CLI nog niet hebt:
-curl -sSfL https://get.tur.so/install.sh | bash
+5. **Open het dashboard** op `<PUBLIC_URL>/dashboard`, log in met Discord, kies
+   je server, en stel tickets/welkomstbericht/verificatie/regels in.
 
-turso auth login
-turso db create aurex-db
-turso db show aurex-db --url          # → TURSO_DATABASE_URL
-turso db tokens create aurex-db       # → TURSO_AUTH_TOKEN
-```
+## Hosten op Render
 
-Zet beide waarden in je `.env` (lokaal) en in de Environment Variables van je
-Render-service (productie).
+- Root Directory: de map met dit `package.json` (bv. `bot`, als dit een submap is).
+- Build Command: `npm install`
+- Start Command: `node start.js`
+- Zet alle variabelen uit `.env.example` in Render → Environment.
+- Gebruik Turso voor de database, anders is je SQLite-bestand weg na elke redeploy
+  (Render's filesystem is niet persistent zonder een betaalde Disk).
 
-### Migraties toepassen
+## Commands overzicht
 
-Prisma's migratie-commando kan niet rechtstreeks tegen een externe Turso-
-database draaien, dus het gaat in twee stappen: eerst lokaal de migratie-SQL
-laten genereren (tegen een tijdelijk lokaal bestand), en die SQL dan naar
-Turso sturen.
+| Command | Wie | Doet |
+|---|---|---|
+| `/ticket-setup` | Management | Configureert en verstuurt het ticketpaneel |
+| `/ticket-addtype` `/ticket-edittype` `/ticket-removetype` `/ticket-listtypes` | Management | Beheert ticket-types |
+| `/ticket-claim` `/ticket-close` `/ticket-add` `/ticket-remove` `/ticket-list` | Staff | Dagelijks tickets beheren |
+| `/welcome-test` | Management | Stuurt een testbericht met de huidige welkomst-config |
+| `/verify-panel` | Management | Verstuurt het verificatie-paneel in een kanaal |
+| `/checkverify` | Staff | Toont wie geverifieerd is |
+| `/unverify` | Management | Verwijdert de verificatie-rol van een lid |
+| `/rules-send` | Management | Plaatst/werkt de regels-embed bij |
+| `/announce` | Management | Stuurt een aankondiging |
+| `/ban` `/kick` `/unban` | Management | Basis moderatie |
+| `/userinfo` | Iedereen | Info over een lid |
+| `/8ball` `/coinflip` `/roll` | Iedereen | Fun commands |
+| `/shutdown` | Management | Sluit de bot netjes af |
 
-```bash
-cd bot
-npm install
-
-# 1. Genereer de migratie lokaal (DATABASE_URL wijst hiervoor naar een lokaal bestand)
-npm run migrate:local -- --name init
-
-# 2. Stuur diezelfde migratie-SQL naar je echte Turso-database
-npm run migrate:turso
-```
-
-Voor elke latere schema-wijziging herhaal je dit: eerst `migrate:local` om
-nieuwe migratie-SQL te genereren, dan `migrate:turso` om 'm toe te passen.
-
-## Lokaal draaien
-
-```bash
-cd aurex-development/bot
-cp ../.env.example .env      # vul token, client id/secret, Turso-gegevens in
-npm install
-npm run migrate:local -- --name init
-npm run migrate:turso
-npm run deploy-commands      # registreert de slash commands bij Discord
-npm run dev                  # start bot + dashboard samen op :3000
-```
-
-Zet in het Discord Developer Portal onder OAuth2 → Redirects:
-`http://localhost:3000/api/auth/callback/discord`.
-
-## Deployen op Render
-
-`render.yaml` is verwijderd — je stelt de service handmatig in via de Render-
-interface (New → Web Service):
-
-1. Push naar GitHub/GitLab, koppel de repo in Render.
-2. **Root Directory**: `bot`
-3. **Build Command**: `npm install && npx prisma generate && npm run build`
-4. **Start Command**: `npm start`
-5. Environment Variables: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`,
-   `DISCORD_CLIENT_SECRET`, `NEXTAUTH_SECRET`, `TURSO_DATABASE_URL`,
-   `TURSO_AUTH_TOKEN`. (`DATABASE_URL` hoef je in productie niet te zetten —
-   die wordt alleen lokaal gebruikt om migraties te genereren.)
-6. Migraties zijn al toegepast op Turso via `npm run migrate:turso` (zie
-   hierboven) — dat hoeft Render niet opnieuw te doen.
-7. Render geeft je één URL, bv. `https://aurex-development.onrender.com`.
-   Voeg in het Discord Developer Portal onder OAuth2 → Redirects toe:
-   `https://aurex-development.onrender.com/api/auth/callback/discord`.
-   `NEXTAUTH_URL` hoef je niet zelf te zetten — Render injecteert
-   `RENDER_EXTERNAL_URL` automatisch en de code gebruikt die als fallback.
-8. Eenmalig ná de eerste succesvolle deploy: registreer de slash commands.
-   Draai `npm run deploy-commands` lokaal met dezelfde
-   `DISCORD_TOKEN`/`DISCORD_CLIENT_ID` als productie (of tijdelijk als losse
-   Render **Job**).
-
-Bot aanmaken: Discord Developer Portal → New Application → Bot → token en
-client id/secret naar je envvars. Nodig de bot uit met `applications.commands`
-en `bot`-scopes en minimaal: Manage Channels, Manage Roles, Send Messages,
-Embed Links, Read Message History.
-
-## Roadmap — resterende modules
-
-Elke module volgt hetzelfde patroon (command/pagina → database → Discord-actie
-of dashboard-render) en kan los gebouwd worden:
-
-1. **Welcome/goodbye-systeem** — `guildMemberAdd`-event + templating (`{user}`,
-   `{username}`, `{server}`) + live preview via dashboard
-2. **Verificatiesysteem** — apart van klantstatus; verified-rol ≠ verified customer
-3. **Klantensysteem verdiepen** — `/customer`, `/customer-history`, notities,
-   automatische rol-toekenning ná betaalcontrole
-4. **Productcatalogus afmaken** — `/shop` en `/products` tonen gepubliceerde
-   producten als embeds met bestelknop, publiceren/verbergen vanuit dashboard
-5. **Order management** — `/order create|status|assign|complete|cancel`,
-   statusupdates naar klant, koppeling met tickets
-6. **Transcripts** — `discord-html-transcripts`-package, opslaan + linken in
-   `logTickets`
-7. **Embed builder** — modal-gebaseerde editor in Discord óf builder in het
-   dashboard, met Save/Preview/Send Test/Publish
-8. **Dashboard uitbreiden** — Tickets, Customers, Reviews, Embeds,
-   Moderation, Staff-rechtenmatrix, Logs, Bot Status, Website Settings —
-   volgen exact het patroon van Products/Orders
-9. **Logging & foutafhandeling** — centrale logger die naar de juiste
-   `log*`-kanalen post + foutregistratie voor bot-fouten
-
-## Belangrijk
-
-Geen enkele koppeling (betalingen, licenties, verificatie) is nagemaakt of
-gesimuleerd — alles schrijft naar echte database-records, en features die een
-externe koppeling nodig hebben (bv. een betaalprovider) tonen duidelijk "niet
-verbonden" totdat jij die koppeling toevoegt.
+Rollen (`STAFF_ROLE_ID`, `MANAGEMENT_ROLE_ID`) stel je in via `.env`. Server-admins
+(Discord "Administrator" permissie) hebben altijd overal toegang toe.

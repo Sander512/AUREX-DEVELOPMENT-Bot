@@ -1,24 +1,22 @@
 {
   "name": "aurex-development",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Aurex | Development — Discord bot + dashboard (verificatie, tickets, welkomstbericht, regels)",
+  "main": "bot/index.js",
   "scripts": {
-    "dev": "node server.js",
-    "build": "prisma generate && next build",
-    "start": "node server.js",
-    "deploy-commands": "node src/deploy-commands.js",
-    "postinstall": "prisma generate"
+    "start": "node bot/index.js",
+    "api": "node api/server.js",
+    "start:all": "node start.js",
+    "deploy": "node bot/deploy-commands.js"
   },
+  "license": "UNLICENSED",
+  "private": true,
   "dependencies": {
-    "@prisma/client": "^5.20.0",
+    "@libsql/client": "^0.17.4",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
-    "next": "14.2.15",
-    "next-auth": "^4.24.8",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "prisma": "^5.20.0"
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0"
   }
 }
