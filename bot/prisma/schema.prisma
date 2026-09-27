@@ -1,0 +1,271 @@
+// AUREX DEVELOPMENT — Database schema (Turso / libSQL)
+//
+// Turso is SQLite-based and doesn't support native arrays, JSON columns or
+// enums the way Postgres does. Every field that would've been String[],
+// Json or enum in a Postgres schema is a plain String here instead —
+// arrays/objects are stored as JSON text and (de)serialized in app code
+// (see lib/json.js), and "enums" are just documented sets of string values
+// enforced in application code rather than by the database.
+//
+// Local dev: point DATABASE_URL at a local file, e.g. file:./dev.db, and
+// run `npx prisma migrate dev --name init` to create tables + migration SQL.
+// Production (Turso): see README for how to apply that same migration SQL
+// to your Turso database, and how the app connects at runtime via the
+// libSQL driver adapter (lib/prisma.js / src/database/prisma.js).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- SERVER / CORE SETTINGS ----------
+
+model GuildSettings {
+  id                String   @id @default(cuid())
+  guildId           String   @unique
+  accentColor       String   @default("#C9A227")
+  logo              String?
+
+  // Welcome
+  welcomeEnabled    Boolean  @default(false)
+  welcomeChannelId  String?
+  welcomeTitle      String?
+  welcomeMessage    String?
+  welcomeColor      String?
+  welcomeBanner     String?
+  welcomeThumbnail  String?
+  welcomeRoleId     String?
+  welcomeDmEnabled  Boolean  @default(false)
+  welcomeDmMessage  String?
+
+  // Goodbye
+  goodbyeEnabled    Boolean  @default(false)
+  goodbyeChannelId  String?
+  goodbyeMessage    String?
+
+  // Verification
+  verifyEnabled     Boolean  @default(false)
+  verifyChannelId   String?
+  verifyMessage     String?
+  verifiedRoleId    String?
+  unverifiedRoleId  String?
+
+  // Roles (staff + customer role IDs, configurable mapping).
+  // JSON text, e.g. { "OWNER": "roleId", "SUPPORT": "roleId" }.
+  // Parse with parseJson() / stringify with toJsonString() from lib/json.js.
+  roleMap           String?
+
+  // Log channels
+  logTickets        String?
+  logOrders         String?
+  logVerification   String?
+  logCustomerRoles  String?
+  logProducts       String?
+  logModeration     String?
+  logDashboard      String?
+  logErrors         String?
+
+  tickets           Ticket[]
+  ticketCategories  TicketCategory[]
+  products          Product[]
+  orders            Order[]
+  customers         Customer[]
+  embedTemplates    EmbedTemplate[]
+  staffPermissions  StaffPermission[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// ---------- STAFF / PERMISSIONS ----------
+
+// StaffRole values (enforced in app code, not by the database):
+// OWNER | CO_OWNER | MANAGEMENT | HEAD_DEVELOPER | DEVELOPER |
+// JUNIOR_DEVELOPER | SUPPORT_MANAGER | SUPPORT | DESIGNER
+
+model StaffPermission {
+  id             String   @id @default(cuid())
+  guild          GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId        String
+  role           String   // one of the StaffRole values above
+  discordRoleId  String?
+  // JSON text, e.g. {"manageTickets":true,"manageOrders":true}.
+  permissions    String
+
+  @@unique([guildId, role])
+}
+
+// ---------- TICKETS ----------
+
+// TicketCategoryType values:
+// PURCHASE | CUSTOM_DEVELOPMENT | PRODUCT_SUPPORT | INSTALLATION_SUPPORT |
+// BUG_REPORT | BILLING | GENERAL_QUESTIONS
+
+model TicketCategory {
+  id                String   @id @default(cuid())
+  guild             GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId           String
+  type              String   // one of the TicketCategoryType values above
+  label             String
+  emoji             String?
+  discordCategoryId String?
+  // JSON array of role IDs as text, e.g. ["123","456"]. Default "[]".
+  supportRoleIds    String   @default("[]")
+  // JSON array of question objects as text, or null.
+  // [{ "label": "...", "style": "short|paragraph", "required": true }]
+  formQuestions     String?
+  enabled           Boolean  @default(true)
+
+  tickets           Ticket[]
+
+  @@unique([guildId, type])
+}
+
+// TicketStatus values: OPEN | CLAIMED | CLOSED | REOPENED
+// TicketPriority values: LOW | NORMAL | HIGH | URGENT
+
+model Ticket {
+  id             String   @id @default(cuid())
+  guild          GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId        String
+  category       TicketCategory @relation(fields: [categoryId], references: [id])
+  categoryId     String
+  channelId      String   @unique
+  number         Int
+  openerId       String   // discord user id
+  claimedById    String?
+  status         String   @default("OPEN")   // TicketStatus value
+  priority       String   @default("NORMAL") // TicketPriority value
+  formAnswers    String?  // JSON text, or null
+  transcriptUrl  String?
+  order          Order?   @relation(fields: [orderId], references: [id])
+  orderId        String?  @unique
+
+  createdAt      DateTime @default(now())
+  closedAt       DateTime?
+  lastActivityAt DateTime @default(now())
+}
+
+// ---------- CUSTOMERS ----------
+
+// CustomerRole values: CUSTOMER | VERIFIED_CUSTOMER | PARTNER
+
+model Customer {
+  id              String   @id @default(cuid())
+  guild           GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId         String
+  discordUserId   String
+  role            String   @default("CUSTOMER") // CustomerRole value
+  notes           CustomerNote[]
+  orders          Order[]
+  licenses        License[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([guildId, discordUserId])
+}
+
+model CustomerNote {
+  id           String   @id @default(cuid())
+  customer     Customer @relation(fields: [customerId], references: [id])
+  customerId   String
+  authorId     String   // staff discord id
+  content      String
+  createdAt    DateTime @default(now())
+}
+
+model License {
+  id           String   @id @default(cuid())
+  customer     Customer @relation(fields: [customerId], references: [id])
+  customerId   String
+  product      Product  @relation(fields: [productId], references: [id])
+  productId    String
+  licenseKey   String   @unique
+  issuedAt     DateTime @default(now())
+  revoked      Boolean  @default(false)
+}
+
+// ---------- PRODUCTS ----------
+
+// ProductCategory values:
+// CUSTOM_HUDS | OX_INVENTORY | REFUND_SYSTEMS | FIVEM_SCRIPTS |
+// STAFF_ASSIST | CUSTOM_DEVELOPMENT | INSTALLATION_SERVICES
+
+model Product {
+  id             String   @id @default(cuid())
+  guild          GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId        String
+  name           String
+  slug           String
+  description    String
+  category       String   // one of the ProductCategory values above
+  imageUrl       String?
+  priceCents     Int
+  currency       String   @default("EUR")
+  // JSON array of strings as text, e.g. ["Feature A","Feature B"].
+  features       String   @default("[]")
+  compatibility  String?
+  installInfo    String?
+  supportInfo    String?
+  updatesInfo    String?
+  published      Boolean  @default(false)
+
+  orders         Order[]
+  licenses       License[]
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([guildId, slug])
+}
+
+// ---------- ORDERS ----------
+
+// OrderStatus values:
+// PENDING | AWAITING_PAYMENT | PAID | IN_PROGRESS | AWAITING_CUSTOMER |
+// COMPLETED | CANCELLED | REFUNDED
+
+model Order {
+  id              String   @id @default(cuid())
+  guild           GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId         String
+  orderNumber     Int
+  customer        Customer @relation(fields: [customerId], references: [id])
+  customerId      String
+  product         Product  @relation(fields: [productId], references: [id])
+  productId       String
+  amountCents     Int
+  status          String   @default("PENDING") // OrderStatus value
+  assignedStaffId String?
+  notes           String?
+  deliveryInfo    String?
+  ticket          Ticket?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ---------- EMBED BUILDER ----------
+
+// EmbedTemplateType values:
+// WELCOME | VERIFICATION | TICKET_PANEL | PRODUCT | ANNOUNCEMENT |
+// ORDER_CONFIRMATION | REVIEW | CUSTOM
+
+model EmbedTemplate {
+  id           String   @id @default(cuid())
+  guild        GuildSettings @relation(fields: [guildId], references: [guildId])
+  guildId      String
+  name         String
+  type         String   // one of the EmbedTemplateType values above
+  // Full embed definition as JSON text (title, description, color, fields, buttons, etc.)
+  data         String
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
