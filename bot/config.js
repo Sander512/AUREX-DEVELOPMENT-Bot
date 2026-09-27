@@ -33,7 +33,7 @@ const config = {
     // (e.g. bot and API deployed independently, or a custom domain).
     baseUrl:
       process.env.API_BASE_URL ||
-      `http://127.0.0.1:${process.env.PORT || process.env.API_PORT || 3000}`,
+      `http://localhost:${process.env.PORT || process.env.API_PORT || 3000}`,
     key: required('API_KEY'),
     port: parseInt(process.env.API_PORT, 10) || 3000,
   },

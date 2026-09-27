@@ -25,7 +25,9 @@ async function handleVerifyInteraction(interaction) {
     return;
   }
 
-  if (!config.roleId) {
+  const roleIds = config.roleIds || [];
+
+  if (roleIds.length === 0) {
     await interaction.editReply({
       embeds: [
         embeds.warning(
@@ -39,37 +41,50 @@ async function handleVerifyInteraction(interaction) {
 
   const member = interaction.member;
 
-  if (member.roles.cache.has(config.roleId)) {
+  if (roleIds.every((id) => member.roles.cache.has(id))) {
     await interaction.editReply({
       embeds: [embeds.info('Al geverifieerd', 'Je bent al geverifieerd op deze server.')],
     });
     return;
   }
 
-  const role = await interaction.guild.roles.fetch(config.roleId).catch(() => null);
-  if (!role) {
+  const roles = [];
+  const missingRoleIds = [];
+  for (const roleId of roleIds) {
+    const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
+    if (role) roles.push(role);
+    else missingRoleIds.push(roleId);
+  }
+
+  if (roles.length === 0) {
     await interaction.editReply({
-      embeds: [embeds.error('Rol niet gevonden', 'De ingestelde verificatie-rol bestaat niet meer. Vraag een beheerder dit opnieuw in te stellen.')],
+      embeds: [embeds.error('Rol niet gevonden', 'De ingestelde verificatie-rol(len) bestaan niet meer. Vraag een beheerder dit opnieuw in te stellen.')],
     });
     return;
   }
 
   try {
-    await member.roles.add(role);
+    await member.roles.add(roles);
   } catch (err) {
     await interaction.editReply({
       embeds: [
         embeds.error(
           'Kon rol niet toekennen',
-          'De bot heeft geen rechten om deze rol toe te kennen. Controleer of de bot-rol boven de verificatierol staat.'
+          'De bot heeft geen rechten om deze rol(len) toe te kennen. Controleer of de bot-rol boven de verificatierol(len) staat.'
         ),
       ],
     });
     return;
   }
 
+  const roleMentions = roles.map((r) => `${r}`).join(', ');
+  const missingNote =
+    missingRoleIds.length > 0
+      ? '\n\n⚠️ Eén of meer ingestelde rollen bestaan niet meer en zijn overgeslagen — vraag een beheerder dit bij te werken.'
+      : '';
+
   await interaction.editReply({
-    embeds: [embeds.success('Geverifieerd!', `Je hebt nu de rol ${role} en toegang tot de server.`)],
+    embeds: [embeds.success('Geverifieerd!', `Je hebt nu de rol${roles.length > 1 ? 'len' : ''} ${roleMentions} en toegang tot de server.${missingNote}`)],
   });
 
   if (config.logChannelId) {

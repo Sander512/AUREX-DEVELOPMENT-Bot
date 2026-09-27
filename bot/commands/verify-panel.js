@@ -37,7 +37,7 @@ module.exports = {
       return;
     }
 
-    if (!config.roleId) {
+    if (!config.roleIds || config.roleIds.length === 0) {
       await interaction.editReply({
         embeds: [
           embeds.warning(

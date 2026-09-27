@@ -21,28 +21,40 @@ module.exports = {
       return;
     }
 
-    if (!config.roleId) {
+    const roleIds = config.roleIds || [];
+    if (roleIds.length === 0) {
       await interaction.editReply({
         embeds: [embeds.warning('Nog niet ingesteld', 'Er is nog geen verificatie-rol ingesteld.')],
       });
       return;
     }
 
-    const role = await interaction.guild.roles.fetch(config.roleId).catch(() => null);
-    if (!role) {
+    const roles = [];
+    for (const roleId of roleIds) {
+      const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
+      if (role) roles.push(role);
+    }
+
+    if (roles.length === 0) {
       await interaction.editReply({
-        embeds: [embeds.error('Rol niet gevonden', 'De ingestelde verificatie-rol bestaat niet meer.')],
+        embeds: [embeds.error('Rol niet gevonden', 'De ingestelde verificatie-rol(len) bestaan niet meer.')],
       });
       return;
     }
 
     // Make sure the member cache is populated before reading role.members.
     await interaction.guild.members.fetch().catch(() => {});
-    const members = [...role.members.values()];
+    // Union across all verify-rollen — iemand telt als geverifieerd zodra
+    // ze minstens één van de ingestelde rollen hebben.
+    const memberMap = new Map();
+    for (const role of roles) {
+      for (const m of role.members.values()) memberMap.set(m.id, m);
+    }
+    const members = [...memberMap.values()];
 
     if (members.length === 0) {
       await interaction.editReply({
-        embeds: [embeds.info('Geen geverifieerde leden', `Nog niemand heeft de rol ${role}.`)],
+        embeds: [embeds.info('Geen geverifieerde leden', `Nog niemand heeft de verificatie-rol${roles.length > 1 ? 'len' : ''} ${roles.join(', ')}.`)],
       });
       return;
     }

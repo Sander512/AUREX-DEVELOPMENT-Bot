@@ -25,7 +25,8 @@ module.exports = {
       return;
     }
 
-    if (!config.roleId) {
+    const roleIds = config.roleIds || [];
+    if (roleIds.length === 0) {
       await interaction.editReply({
         embeds: [embeds.warning('Nog niet ingesteld', 'Er is nog geen verificatie-rol ingesteld.')],
       });
@@ -38,15 +39,16 @@ module.exports = {
       return;
     }
 
-    if (!member.roles.cache.has(config.roleId)) {
+    const heldRoleIds = roleIds.filter((id) => member.roles.cache.has(id));
+    if (heldRoleIds.length === 0) {
       await interaction.editReply({
-        embeds: [embeds.info('Niet geverifieerd', `<@${target.id}> heeft de verificatie-rol niet.`)],
+        embeds: [embeds.info('Niet geverifieerd', `<@${target.id}> heeft geen van de verificatie-rollen.`)],
       });
       return;
     }
 
     try {
-      await member.roles.remove(config.roleId);
+      await member.roles.remove(heldRoleIds);
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Ontkoppelen mislukt', err.message)] });
       return;

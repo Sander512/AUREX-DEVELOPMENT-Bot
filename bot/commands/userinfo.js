@@ -23,7 +23,8 @@ module.exports = {
     let verifiedText = 'Onbekend';
     try {
       const { config } = await api.getVerifyConfig(interaction.guildId);
-      verifiedText = config.roleId ? (member.roles.cache.has(config.roleId) ? 'Ja ✅' : 'Nee ❌') : 'Niet ingesteld';
+      const roleIds = config.roleIds || [];
+      verifiedText = roleIds.length > 0 ? (roleIds.some((id) => member.roles.cache.has(id)) ? 'Ja ✅' : 'Nee ❌') : 'Niet ingesteld';
     } catch {
       // Non-fatal — just show "Onbekend" if the API call fails.
     }
