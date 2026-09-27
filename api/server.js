@@ -107,11 +107,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Exported so start.js (combined mode) can wait until the API is
-// actually accepting connections before letting the bot log in —
-// otherwise a fast Discord gateway handshake can race ahead of a slow
-// database connection (e.g. Turso) and the bot's first API call fails.
-const ready = (async () => {
+(async () => {
   try {
     await initDb();
     console.log('[API] Database schema geïnitialiseerd.');
@@ -120,12 +116,7 @@ const ready = (async () => {
     process.exit(1);
   }
 
-  await new Promise((resolve) => {
-    app.listen(PORT, () => {
-      console.log(`[API] Aurex | Development API luistert op poort ${PORT}`);
-      resolve();
-    });
+  app.listen(PORT, () => {
+    console.log(`[API] Aurex | Development API luistert op poort ${PORT}`);
   });
 })();
-
-module.exports = { app, ready };

@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS welcome_config (
 CREATE TABLE IF NOT EXISTS verify_config (
   guild_id TEXT PRIMARY KEY,
   role_id TEXT,
+  role_ids TEXT,
   panel_title TEXT NOT NULL DEFAULT '🔐 Verifieer jezelf',
   panel_description TEXT NOT NULL DEFAULT 'Klik op de knop hieronder om jezelf te verifiëren en toegang te krijgen tot de server.',
   panel_color TEXT NOT NULL DEFAULT '5865f2',
@@ -195,7 +196,25 @@ const MIGRATIONS = [
   `ALTER TABLE welcome_config ADD COLUMN dm_enabled INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE welcome_config ADD COLUMN dm_message TEXT DEFAULT 'Welkom bij Aurex | Development, {username}! Fijn dat je er bent.'`,
   `ALTER TABLE rules_config ADD COLUMN message_id TEXT`,
+  // Verify-rol werd één losse role_id; nu een JSON-array role_ids zodat
+  // verificatie meerdere rollen tegelijk kan toekennen. role_id blijft
+  // staan (niet meer gebruikt) zodat oude rijen niets kwijtraken.
+  `ALTER TABLE verify_config ADD COLUMN role_ids TEXT`,
 ];
+
+// One-time data migration: existing rows only have the old single
+// role_id filled in — copy that into the new role_ids array the first
+// time this runs, so nobody's existing verify-rol config silently
+// disappears after the update. Guarded so it never overwrites a row
+// that already has role_ids set (e.g. someone already configured
+// multiple roles via the dashboard).
+const ROLE_IDS_BACKFILL = `
+  UPDATE verify_config
+  SET role_ids = '["' || role_id || '"]'
+  WHERE role_id IS NOT NULL
+    AND TRIM(role_id) != ''
+    AND (role_ids IS NULL OR TRIM(role_ids) = '')
+`;
 
 async function initDb() {
   await db.executeMultiple(SCHEMA);
@@ -207,6 +226,8 @@ async function initDb() {
       if (!/duplicate column/i.test(err.message)) throw err;
     }
   }
+
+  await db.execute({ sql: ROLE_IDS_BACKFILL, args: [] });
 }
 
 module.exports = { db, initDb };

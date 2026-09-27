@@ -13,7 +13,7 @@ const { requireApiKeyOrGuildAccess } = require('../middleware/auth');
 const router = express.Router();
 
 const DEFAULT_CONFIG = {
-  role_id: null,
+  role_ids: null,
   panel_title: '🔐 Verifieer jezelf',
   panel_description: 'Klik op de knop hieronder om jezelf te verifiëren en toegang te krijgen tot de server.',
   panel_color: '5865f2',
@@ -24,7 +24,7 @@ const DEFAULT_CONFIG = {
 };
 
 const FIELD_MAP = {
-  roleId: 'role_id',
+  roleIds: 'role_ids',
   panelTitle: 'panel_title',
   panelDescription: 'panel_description',
   panelColor: 'panel_color',
@@ -34,12 +34,22 @@ const FIELD_MAP = {
   logChannelId: 'log_channel_id',
 };
 
+function parseRoleIds(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string' && id) : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToConfig(row) {
   const source = row || { guild_id: null, ...DEFAULT_CONFIG };
   return {
     guildId: source.guild_id,
     configured: !!row,
-    roleId: source.role_id || null,
+    roleIds: parseRoleIds(source.role_ids),
     panelTitle: source.panel_title || DEFAULT_CONFIG.panel_title,
     panelDescription: source.panel_description || DEFAULT_CONFIG.panel_description,
     panelColor: source.panel_color || DEFAULT_CONFIG.panel_color,
@@ -108,9 +118,20 @@ router.post(
         value = value === null ? DEFAULT_CONFIG.panel_color : normalizeHexColor(value);
       }
 
-      if (['role_id', 'log_channel_id'].includes(column)) {
+      if (column === 'log_channel_id') {
         if (value !== null && !isDiscordId(String(value))) {
           return res.status(400).json({ error: `${camelKey} must be a valid Discord snowflake ID or null` });
+        }
+      }
+
+      if (column === 'role_ids') {
+        if (value !== null) {
+          if (!Array.isArray(value) || !value.every((id) => isDiscordId(String(id)))) {
+            return res.status(400).json({ error: 'roleIds must be an array of valid Discord snowflake IDs, or null' });
+          }
+          // De-dupe while keeping order, then store as JSON — sqlite/libSQL
+          // has no native array column type.
+          value = JSON.stringify([...new Set(value.map(String))]);
         }
       }
 

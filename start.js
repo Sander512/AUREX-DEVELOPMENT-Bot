@@ -23,15 +23,9 @@ const deployCommands = require('./bot/deploy-commands');
 console.log('[START] Aurex | Development — gecombineerde modus (API + Bot in 1 proces)');
 
 // Starts the Express API and binds to process.env.PORT / API_PORT.
-// Starts the Express API and binds to process.env.PORT / API_PORT.
-const apiServer = require('./api/server');
+require('./api/server');
 
 (async () => {
-  // Wait until the API is actually listening before doing anything that
-  // might call it (slash command deploy doesn't need it, but the bot's
-  // very first action on 'ready' does).
-  await apiServer.ready;
-
   try {
     await deployCommands();
   } catch (err) {

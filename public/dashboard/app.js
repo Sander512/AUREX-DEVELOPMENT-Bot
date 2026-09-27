@@ -556,7 +556,7 @@ function escapeHtml(str) {
 
 // ---- Verify tab ----
 function fillVerifyForm(config) {
-  $('vf_roleId').value = config.roleId || '';
+  $('vf_roleId').value = (config.roleIds || []).join(', ');
   $('vf_panelTitle').value = config.panelTitle || '';
   $('vf_panelDescription').value = config.panelDescription || '';
   $('vf_panelColor').value = config.panelColor || '5865f2';
@@ -608,8 +608,14 @@ $('saveVerifyBtn').addEventListener('click', async () => {
   status.style.color = 'var(--success)';
   status.textContent = 'Opslaan...';
 
+  const roleIdsInput = $('vf_roleId').value || '';
+  const roleIds = roleIdsInput
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+
   const fields = {
-    roleId: $('vf_roleId').value || null,
+    roleIds: roleIds.length > 0 ? roleIds : null,
     panelTitle: $('vf_panelTitle').value,
     panelDescription: $('vf_panelDescription').value,
     panelColor: $('vf_panelColor').value.replace('#', '') || '5865f2',
