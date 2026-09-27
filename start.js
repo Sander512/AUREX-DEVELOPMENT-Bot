@@ -23,7 +23,7 @@ const deployCommands = require('./bot/deploy-commands');
 console.log('[START] Aurex | Development — gecombineerde modus (API + Bot in 1 proces)');
 
 // Starts the Express API and binds to process.env.PORT / API_PORT.
-require('./api/server');
+const { ready: apiReady } = require('./api/server');
 
 (async () => {
   try {
@@ -34,6 +34,12 @@ require('./api/server');
     // registered. Just log it loudly so it's visible in the logs.
     console.error('[START] Slash command registratie mislukt (bot start toch door):', err);
   }
+
+  // Wait until the API has actually finished initDb() and bound to its
+  // port before letting the bot log in — otherwise the bot's 'ready'
+  // handler can fire (and try to sync its guild list to the API) before
+  // the API is listening, which fails with ECONNREFUSED / "fetch failed".
+  await apiReady;
 
   // Logs the Discord bot in and starts listening for interactions.
   require('./bot/index');

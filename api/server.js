@@ -44,6 +44,15 @@ const app = express();
 
 const path = require('path');
 
+// Resolved once the API is actually listening on PORT (after initDb()).
+// start.js awaits this before logging the bot in, so the bot never tries
+// to sync its guild list to an API that isn't up yet (the cause of
+// "fetch failed" / ECONNREFUSED on localhost right after boot).
+let resolveReady;
+const ready = new Promise((resolve) => {
+  resolveReady = resolve;
+});
+
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '100kb' }));
@@ -118,5 +127,8 @@ app.use((err, req, res, next) => {
 
   app.listen(PORT, () => {
     console.log(`[API] Aurex | Development API luistert op poort ${PORT}`);
+    resolveReady();
   });
 })();
+
+module.exports = { app, ready };
