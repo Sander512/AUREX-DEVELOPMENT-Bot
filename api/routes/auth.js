@@ -98,6 +98,9 @@ router.get(
     clearOAuthStateCookie(res);
 
     if (!code || !state || !cookies[OAUTH_STATE_COOKIE] || state !== cookies[OAUTH_STATE_COOKIE]) {
+      console.error(
+        `[AUTH] Ongeldige state: code=${!!code} state=${!!state} stateCookie=${!!cookies[OAUTH_STATE_COOKIE]} match=${state === cookies[OAUTH_STATE_COOKIE]}`
+      );
       return res.redirect(buildRedirectUrl(returnTo, { login_error: 'invalid_state' }));
     }
 
@@ -105,6 +108,7 @@ router.get(
     try {
       tokenData = await oauth.exchangeCode(String(code));
     } catch (err) {
+      console.error('[AUTH] Discord token-uitwisseling mislukt:', err.message);
       return res.redirect(buildRedirectUrl(returnTo, { login_error: 'token_exchange_failed' }));
     }
 

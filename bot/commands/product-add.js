@@ -14,6 +14,10 @@ module.exports = {
     .addStringOption((opt) => opt.setName('omschrijving').setDescription('Korte omschrijving').setMaxLength(4000))
     .addStringOption((opt) => opt.setName('versie').setDescription('Versienummer, bv. 1.0.0').setMaxLength(100))
     .addStringOption((opt) => opt.setName('changelog').setDescription('Wat is er nieuw/anders').setMaxLength(4000))
+    .addStringOption((opt) => opt.setName('categorie').setDescription('Bv. Bots, Templates, Scripts').setMaxLength(60))
+    .addStringOption((opt) =>
+      opt.setName('afbeeldingen').setDescription('Foto-links (met spatie of komma ertussen), eerste = hoofdfoto').setMaxLength(2000)
+    )
     .addStringOption((opt) =>
       opt
         .setName('valuta')
@@ -33,6 +37,8 @@ module.exports = {
         description: interaction.options.getString('omschrijving') || null,
         version: interaction.options.getString('versie') || null,
         changelog: interaction.options.getString('changelog') || null,
+        category: interaction.options.getString('categorie') || null,
+        imageUrls: (interaction.options.getString('afbeeldingen') || '').split(/[\s,]+/).filter(Boolean),
         currency: interaction.options.getString('valuta') || 'eur',
       });
 

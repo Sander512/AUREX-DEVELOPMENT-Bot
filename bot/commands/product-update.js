@@ -19,6 +19,10 @@ module.exports = {
     .addStringOption((opt) => opt.setName('changelog').setDescription('Wat is er veranderd').setMaxLength(4000))
     .addNumberOption((opt) => opt.setName('nieuwe_prijs').setDescription('Nieuwe prijs, bv. 24.99').setMinValue(0.01))
     .addStringOption((opt) => opt.setName('omschrijving').setDescription('Nieuwe omschrijving').setMaxLength(4000))
+    .addStringOption((opt) => opt.setName('categorie').setDescription('Nieuwe categorie').setMaxLength(60))
+    .addStringOption((opt) =>
+      opt.setName('afbeeldingen').setDescription('Nieuwe foto-links (spatie/komma ertussen) — vervangt de oude').setMaxLength(2000)
+    )
     .addBooleanOption((opt) => opt.setName('actief').setDescription('Zichtbaar/kopen in de webshop'))
     .addBooleanOption((opt) =>
       opt.setName('stuur_update').setDescription('Stuur meteen een DM naar iedereen die dit product al heeft gekocht (standaard: nee)')
@@ -71,6 +75,10 @@ module.exports = {
     if (nieuwePrijs !== null) fields.priceCents = Math.round(nieuwePrijs * 100);
     if (omschrijving !== null) fields.description = omschrijving;
     if (actief !== null) fields.active = actief;
+    const categorie = interaction.options.getString('categorie');
+    const afbeeldingen = interaction.options.getString('afbeeldingen');
+    if (categorie !== null) fields.category = categorie;
+    if (afbeeldingen !== null) fields.imageUrls = afbeeldingen.split(/[\s,]+/).filter(Boolean);
 
     if (Object.keys(fields).length === 0) {
       await interaction.editReply({ embeds: [embeds.warning('Niets om bij te werken', 'Vul minstens één veld in om te wijzigen.')] });

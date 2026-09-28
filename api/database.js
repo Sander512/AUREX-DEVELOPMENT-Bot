@@ -188,6 +188,8 @@ CREATE TABLE IF NOT EXISTS products (
   currency TEXT NOT NULL DEFAULT 'eur',
   version TEXT,
   changelog TEXT,
+  category TEXT,
+  image_urls TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -259,6 +261,9 @@ const MIGRATIONS = [
   `ALTER TABLE verify_config ADD COLUMN role_ids TEXT`,
   // Winkelwagen: meerdere producten in één bestelling delen een order_id.
   `ALTER TABLE purchases ADD COLUMN order_id TEXT`,
+  // Webshop-uiterlijk: categorie en productfoto's (JSON-array van URL's).
+  `ALTER TABLE products ADD COLUMN category TEXT`,
+  `ALTER TABLE products ADD COLUMN image_urls TEXT`,
 ];
 
 // One-time data migration: existing rows only have the old single

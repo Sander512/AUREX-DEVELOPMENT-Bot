@@ -29,6 +29,15 @@ const ALLOWED_CURRENCIES = new Set(['eur', 'usd', 'gbp']);
 // Helpers
 // ---------------------------------------------------------------------
 
+function parseJsonArray(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToPublicProduct(row) {
   return {
     id: row.id,
@@ -38,6 +47,9 @@ function rowToPublicProduct(row) {
     priceCents: row.price_cents,
     currency: row.currency,
     version: row.version || null,
+    changelog: row.changelog || '',
+    category: row.category || null,
+    imageUrls: parseJsonArray(row.image_urls),
   };
 }
 
@@ -221,7 +233,7 @@ router.get(
 );
 
 function validateProductFields(fields, { partial }) {
-  const { name, description, priceCents, currency, version, changelog, active } = fields;
+  const { name, description, priceCents, currency, version, changelog, active, category, imageUrls } = fields;
 
   if (!partial || name !== undefined) {
     if (typeof name !== 'string' || name.trim().length === 0 || name.length > 200) {
@@ -248,6 +260,16 @@ function validateProductFields(fields, { partial }) {
     if (typeof changelog !== 'string' || changelog.length > 4000) return 'changelog mag max 4000 tekens zijn';
   }
   if (active !== undefined && typeof active !== 'boolean') return 'active moet true/false zijn';
+  if (category !== undefined && category !== null) {
+    if (typeof category !== 'string' || category.length > 60) return 'category mag max 60 tekens zijn';
+  }
+  if (imageUrls !== undefined && imageUrls !== null) {
+    const ok =
+      Array.isArray(imageUrls) &&
+      imageUrls.length <= 8 &&
+      imageUrls.every((u) => typeof u === 'string' && u.length <= 500 && /^https?:\/\//i.test(u));
+    if (!ok) return 'imageUrls moet een lijst zijn van maximaal 8 links die met http(s):// beginnen';
+  }
 
   return null;
 }
@@ -268,8 +290,8 @@ router.post(
 
     await db.execute({
       sql: `INSERT INTO products
-            (id, guild_id, name, description, price_cents, currency, version, changelog, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+            (id, guild_id, name, description, price_cents, currency, version, changelog, category, image_urls, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       args: [
         id,
         guildId,
@@ -279,6 +301,8 @@ router.post(
         (fields.currency || 'eur').toLowerCase(),
         fields.version || null,
         fields.changelog || null,
+        (fields.category && fields.category.trim()) || null,
+        fields.imageUrls && fields.imageUrls.length ? JSON.stringify(fields.imageUrls) : null,
         now,
         now,
       ],
@@ -315,6 +339,8 @@ router.post(
       version: 'version',
       changelog: 'changelog',
       active: 'active',
+      category: 'category',
+      imageUrls: 'image_urls',
     };
 
     const setClauses = [];
@@ -325,6 +351,8 @@ router.post(
       if (camelKey === 'name') value = value.trim();
       if (camelKey === 'currency') value = value.toLowerCase();
       if (camelKey === 'active') value = value ? 1 : 0;
+      if (camelKey === 'category') value = (value && value.trim()) || null;
+      if (camelKey === 'imageUrls') value = value && value.length ? JSON.stringify(value) : null;
       setClauses.push(`${column} = ?`);
       args.push(value);
     }

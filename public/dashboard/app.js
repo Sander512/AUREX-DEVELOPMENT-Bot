@@ -864,6 +864,8 @@ $('addProductBtn').addEventListener('click', async () => {
       currency: $('sp_currency').value,
       version: $('sp_version').value.trim() || null,
       changelog: $('sp_changelog').value.trim() || null,
+      category: $('sp_category').value.trim() || null,
+      imageUrls: $('sp_images').value.split('\n').map((l) => l.trim()).filter(Boolean),
     });
 
     $('sp_name').value = '';
@@ -871,6 +873,8 @@ $('addProductBtn').addEventListener('click', async () => {
     $('sp_price').value = '';
     $('sp_version').value = '';
     $('sp_changelog').value = '';
+    $('sp_category').value = '';
+    $('sp_images').value = '';
     status.textContent = '✅ Toegevoegd';
     status.style.color = 'var(--success)';
     await loadShop();
