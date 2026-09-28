@@ -10,37 +10,50 @@
 
 const config = require('../config');
 const { db } = require('../database');
-const { getPurchaseByStripeSessionId, getProductRow, queuePendingDm, formatPrice } = require('../utils/storeHelpers');
+const { getPurchaseByStripeSessionId, getPurchasesByOrderId, getProductRow, queuePendingDm, formatPrice } = require('../utils/storeHelpers');
 
 const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretKey) : null;
 
 async function markPurchaseCompleted(session) {
-  const purchase = await getPurchaseByStripeSessionId(session.id);
-  if (!purchase) {
+  // Nieuwe bestellingen (winkelwagen) zoeken we via order_id in de
+  // metadata; oudere losse aankopen via de Stripe session id.
+  const orderId = session.metadata && session.metadata.orderId;
+  let rows = orderId ? await getPurchasesByOrderId(orderId) : [];
+  if (rows.length === 0) {
+    const legacy = await getPurchaseByStripeSessionId(session.id);
+    rows = legacy ? [legacy] : [];
+  }
+
+  if (rows.length === 0) {
     console.warn(`[STORE] Webhook voor onbekende Stripe session ${session.id} — genegeerd.`);
     return;
   }
 
   // Stripe kan hetzelfde event meermaals afleveren (at-least-once
-  // delivery) — als deze aankoop al 'completed' is, niet nog een keer
-  // een bevestigings-DM versturen.
-  if (purchase.status === 'completed') return;
+  // delivery) — al afgeronde bestelling niet nog eens verwerken/DM'en.
+  if (rows.every((r) => r.status === 'completed')) return;
 
   const now = Date.now();
-  await db.execute({
-    sql: `UPDATE purchases SET status = 'completed', stripe_payment_intent = ?, purchased_at = ? WHERE id = ?`,
-    args: [session.payment_intent || null, now, purchase.id],
-  });
-
-  const product = await getProductRow(purchase.product_id);
-  if (product) {
-    await queuePendingDm(
-      purchase.discord_id,
-      `✅ Bedankt voor je aankoop: ${product.name}`,
-      `Je betaling van ${formatPrice(purchase.amount_cents, purchase.currency)} is gelukt en je aankoop staat genoteerd.` +
-        (product.version ? `\n\n**Huidige versie:** ${product.version}` : '')
-    );
+  for (const row of rows) {
+    await db.execute({
+      sql: `UPDATE purchases SET status = 'completed', stripe_payment_intent = ?, purchased_at = ? WHERE id = ?`,
+      args: [session.payment_intent || null, now, row.id],
+    });
   }
+
+  const names = [];
+  let total = 0;
+  for (const row of rows) {
+    const product = await getProductRow(row.product_id);
+    if (product) names.push(product.version ? `${product.name} (v${product.version})` : product.name);
+    total += row.amount_cents;
+  }
+
+  await queuePendingDm(
+    rows[0].discord_id,
+    '✅ Bedankt voor je aankoop!',
+    `Je betaling van ${formatPrice(total, rows[0].currency)} is gelukt.\n\n**Gekocht:**\n${names.map((n) => `• ${n}`).join('\n')}`
+  );
 }
 
 // Express handler (NIET een router — zie uitleg bovenaan).

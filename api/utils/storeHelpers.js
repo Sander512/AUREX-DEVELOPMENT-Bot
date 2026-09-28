@@ -15,6 +15,11 @@ async function getPurchaseByStripeSessionId(sessionId) {
   return result.rows[0] || null;
 }
 
+async function getPurchasesByOrderId(orderId) {
+  const result = await db.execute({ sql: 'SELECT * FROM purchases WHERE order_id = ?', args: [orderId] });
+  return result.rows;
+}
+
 async function hasCompletedPurchase(productId, discordId) {
   const result = await db.execute({
     sql: `SELECT 1 FROM purchases WHERE product_id = ? AND discord_id = ? AND status = 'completed' LIMIT 1`,
@@ -40,6 +45,7 @@ function formatPrice(cents, currency) {
 module.exports = {
   getProductRow,
   getPurchaseByStripeSessionId,
+  getPurchasesByOrderId,
   hasCompletedPurchase,
   queuePendingDm,
   formatPrice,

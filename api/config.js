@@ -46,6 +46,11 @@ const config = {
   // alleen een return-URL die exact op dit domein uitkomt wordt
   // vertrouwd, ter voorkoming van open-redirect misbruik).
   // Laat leeg als de shop gewoon op hetzelfde domein blijft (/shop).
+  // Standaard server voor de shop (zodat de shop-link geen ?guild= nodig
+  // heeft) en de Discord-uitnodigingslink voor de "Join Discord"-knop.
+  shopGuildId: process.env.SHOP_GUILD_ID || process.env.DISCORD_GUILD_ID || null,
+  discordInviteUrl: process.env.DISCORD_INVITE_URL || null,
+
   shopOrigin: process.env.SHOP_ORIGIN ? process.env.SHOP_ORIGIN.replace(/\/$/, '') : null,
 };
 

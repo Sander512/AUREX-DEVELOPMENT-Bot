@@ -58,7 +58,11 @@ function rowToAdminProduct(row) {
 // GET /store/config — laat het dashboard weten waar de losse webshop
 // draait (voor de "Shop-link" in het Webshop-tabblad).
 router.get('/config', (req, res) => {
-  res.json({ shopUrl: config.shopOrigin || (config.publicUrl ? `${config.publicUrl}/shop` : null) });
+  res.json({
+    shopUrl: config.shopOrigin || (config.publicUrl ? `${config.publicUrl}/shop` : null),
+    guildId: config.shopGuildId,
+    inviteUrl: config.discordInviteUrl,
+  });
 });
 
 // GET /store/products/:guildId
@@ -81,7 +85,8 @@ router.get(
 // Ingelogde koper — checkout starten en eigen aankopen inzien
 // ---------------------------------------------------------------------
 
-// POST /store/checkout  { productId }
+// POST /store/checkout  { productIds: [...] }  (of { productId } voor één product)
+// Winkelwagen: alle producten gaan in één Stripe Checkout Session.
 router.post(
   '/checkout',
   requireSession,
@@ -90,76 +95,85 @@ router.post(
       return res.status(500).json({ error: 'Stripe is niet geconfigureerd (STRIPE_SECRET_KEY ontbreekt op de server).' });
     }
 
-    const { productId } = req.body || {};
-    if (typeof productId !== 'string' || !productId) {
-      return res.status(400).json({ error: 'productId is verplicht' });
+    const body = req.body || {};
+    let ids = Array.isArray(body.productIds) ? body.productIds : body.productId ? [body.productId] : [];
+    ids = [...new Set(ids.filter((id) => typeof id === 'string' && id))];
+    if (ids.length === 0) return res.status(400).json({ error: 'Je winkelwagen is leeg.' });
+    if (ids.length > 20) return res.status(400).json({ error: 'Maximaal 20 producten per bestelling.' });
+
+    const products = [];
+    for (const id of ids) {
+      const product = await getProductRow(id);
+      if (!product || !product.active) return res.status(404).json({ error: 'Een product in je winkelwagen bestaat niet meer.' });
+      if (await hasCompletedPurchase(product.id, req.user.discordId)) {
+        return res.status(409).json({ error: `Je hebt "${product.name}" al gekocht.` });
+      }
+      products.push(product);
     }
 
-    const product = await getProductRow(productId);
-    if (!product || !product.active) {
-      return res.status(404).json({ error: 'Product niet gevonden' });
+    if (new Set(products.map((p) => p.guild_id)).size > 1) {
+      return res.status(400).json({ error: 'Je kunt niet producten van verschillende shops tegelijk afrekenen.' });
     }
-
-    if (await hasCompletedPurchase(product.id, req.user.discordId)) {
-      return res.status(409).json({ error: 'Je hebt dit product al gekocht.' });
+    if (new Set(products.map((p) => p.currency)).size > 1) {
+      return res.status(400).json({ error: 'Producten met verschillende valuta kun je niet in één bestelling afrekenen.' });
     }
+    const guildId = products[0].guild_id;
 
     if (!config.publicUrl) {
       return res.status(500).json({ error: 'PUBLIC_URL is niet ingesteld op de server — nodig om na afrekenen terug te sturen.' });
     }
 
-    const purchaseId = crypto.randomUUID();
+    const orderId = crypto.randomUUID();
     const shopBase = config.shopOrigin || `${config.publicUrl}/shop`;
-    const successUrl = `${shopBase}/?guild=${product.guild_id}&success=1`;
-    const cancelUrl = `${shopBase}/?guild=${product.guild_id}&canceled=1`;
+    const successUrl = `${shopBase}/?guild=${guildId}&success=1`;
+    const cancelUrl = `${shopBase}/?guild=${guildId}&canceled=1`;
 
     let session;
     try {
       session = await stripe.checkout.sessions.create({
         mode: 'payment',
         payment_method_types: ['card'],
-        line_items: [
-          {
-            price_data: {
-              currency: product.currency,
-              product_data: {
-                name: product.name,
-                description: (product.description || '').slice(0, 500) || undefined,
-              },
-              unit_amount: product.price_cents,
+        line_items: products.map((product) => ({
+          price_data: {
+            currency: product.currency,
+            product_data: {
+              name: product.name,
+              description: (product.description || '').slice(0, 500) || undefined,
             },
-            quantity: 1,
+            unit_amount: product.price_cents,
           },
-        ],
+          quantity: 1,
+        })),
         success_url: successUrl,
         cancel_url: cancelUrl,
-        metadata: {
-          purchaseId,
-          productId: product.id,
-          guildId: product.guild_id,
-          discordId: req.user.discordId,
-        },
+        metadata: { orderId, guildId, discordId: req.user.discordId },
       });
     } catch (err) {
       return res.status(502).json({ error: `Stripe-fout: ${err.message}` });
     }
 
-    await db.execute({
-      sql: `INSERT INTO purchases
-            (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, amount_cents, currency, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-      args: [
-        purchaseId,
-        product.id,
-        product.guild_id,
-        req.user.discordId,
-        req.user.username,
-        session.id,
-        product.price_cents,
-        product.currency,
-        Date.now(),
-      ],
-    });
+    // Eén rij per product; stripe_session_id is UNIQUE, dus die staat
+    // alleen op de eerste rij — de webhook zoekt via order_id.
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+      await db.execute({
+        sql: `INSERT INTO purchases
+              (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+        args: [
+          crypto.randomUUID(),
+          product.id,
+          product.guild_id,
+          req.user.discordId,
+          req.user.username,
+          i === 0 ? session.id : null,
+          orderId,
+          product.price_cents,
+          product.currency,
+          Date.now(),
+        ],
+      });
+    }
 
     res.json({ url: session.url });
   })

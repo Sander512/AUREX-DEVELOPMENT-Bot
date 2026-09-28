@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS purchases (
   discord_id TEXT NOT NULL,
   discord_username TEXT,
   stripe_session_id TEXT UNIQUE,
+  order_id TEXT,
   stripe_payment_intent TEXT,
   amount_cents INTEGER NOT NULL,
   currency TEXT NOT NULL,
@@ -256,6 +257,8 @@ const MIGRATIONS = [
   // verificatie meerdere rollen tegelijk kan toekennen. role_id blijft
   // staan (niet meer gebruikt) zodat oude rijen niets kwijtraken.
   `ALTER TABLE verify_config ADD COLUMN role_ids TEXT`,
+  // Winkelwagen: meerdere producten in één bestelling delen een order_id.
+  `ALTER TABLE purchases ADD COLUMN order_id TEXT`,
 ];
 
 // One-time data migration: existing rows only have the old single
