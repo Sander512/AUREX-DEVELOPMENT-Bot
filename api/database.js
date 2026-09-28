@@ -174,6 +174,62 @@ CREATE TABLE IF NOT EXISTS rules_config (
 CREATE INDEX IF NOT EXISTS idx_ticket_types_guild ON ticket_types(guild_id, position);
 CREATE INDEX IF NOT EXISTS idx_tickets_guild_status ON tickets(guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_tickets_opener_status ON tickets(opener_id, status);
+
+-- ---- Webshop ----
+-- Eén rij per verkoopbaar product. Bewust per guild_id geschaald, net als
+-- alle andere features hier, zodat dezelfde structuur meerdere servers
+-- kan bedienen als dat ooit nodig is.
+CREATE TABLE IF NOT EXISTS products (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  price_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'eur',
+  version TEXT,
+  changelog TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Eén rij per checkout-poging. Begint als 'pending' zodra de Stripe
+-- Checkout Session wordt aangemaakt, en wordt pas 'completed' door de
+-- webhook (nooit door de browser zelf — anders kan iemand een aankoop
+-- vervalsen door gewoon naar de success-URL te surfen zonder te betalen).
+CREATE TABLE IF NOT EXISTS purchases (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  discord_id TEXT NOT NULL,
+  discord_username TEXT,
+  stripe_session_id TEXT UNIQUE,
+  stripe_payment_intent TEXT,
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  purchased_at INTEGER
+);
+
+-- Wachtrij voor DM's die de bot moet versturen. De API (die geen eigen
+-- Discord-verbinding heeft) zet hier rijen in; de bot pollt dit periodiek
+-- leeg. Zo blijft "bot praat met API, nooit andersom" overeind, ook als
+-- bot en API ooit als aparte services draaien.
+CREATE TABLE IF NOT EXISTS pending_dms (
+  id TEXT PRIMARY KEY,
+  discord_id TEXT NOT NULL,
+  embed_title TEXT NOT NULL,
+  embed_description TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
+CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
+CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);
+CREATE INDEX IF NOT EXISTS idx_pending_dms_status ON pending_dms(status, created_at);
 `;
 
 // Columns added after the initial release. CREATE TABLE IF NOT EXISTS does

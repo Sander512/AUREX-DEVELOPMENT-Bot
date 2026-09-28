@@ -138,6 +138,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
       welcome: ['Welkomstbericht', 'Stel in wat er gebeurt zodra iemand de server joint.'],
       verify: ['Verificatie', 'Stel het verificatie-paneel en de bijbehorende rol in.'],
       rules: ['Regels', 'Stel de regels-embed in die met /rules-send geplaatst wordt.'],
+      shop: ['Webshop', 'Beheer producten, bekijk aankopen en stuur update-DM\'s naar kopers.'],
     };
     $('pageTitle').textContent = titles[btn.dataset.tab][0];
     $('pageSubtitle').textContent = titles[btn.dataset.tab][1];
@@ -146,6 +147,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     if (btn.dataset.tab === 'welcome') loadWelcomeConfig();
     if (btn.dataset.tab === 'verify') loadVerifyConfig();
     if (btn.dataset.tab === 'rules') loadRulesConfig();
+    if (btn.dataset.tab === 'shop') loadShop();
   });
 });
 
@@ -729,6 +731,156 @@ async function boot() {
     $('statusPill').style.color = '#fca5a5';
   }
 }
+
+// ---- Webshop tab ----
+function formatPriceAdmin(cents, currency) {
+  return new Intl.NumberFormat('nl-NL', { style: 'currency', currency: (currency || 'eur').toUpperCase() }).format(
+    (cents || 0) / 100
+  );
+}
+
+function renderProductList(products) {
+  const list = $('productList');
+
+  if (products.length === 0) {
+    list.innerHTML = `<p class="muted">Nog geen producten toegevoegd.</p>`;
+    return;
+  }
+
+  list.innerHTML = products
+    .map(
+      (p) => `
+    <div class="product-admin-row" data-id="${p.id}">
+      <div class="product-admin-info">
+        <div><strong>${escapeHtml(p.name)}</strong> ${p.active ? '' : '<span class="hint">(inactief)</span>'} ${
+          p.version ? `<span class="product-version">v${escapeHtml(p.version)}</span>` : ''
+        }</div>
+        <div class="muted" style="font-size:13px;">${formatPriceAdmin(p.priceCents, p.currency)}</div>
+      </div>
+      <div class="product-admin-actions">
+        <button class="btn btn-ghost btn-small" data-action="toggle">${p.active ? 'Deactiveren' : 'Activeren'}</button>
+        <button class="btn btn-ghost btn-small" data-action="notify">🔔 Stuur update</button>
+        <button class="btn btn-danger btn-small" data-action="delete">Verwijderen</button>
+      </div>
+    </div>
+  `
+    )
+    .join('');
+
+  list.querySelectorAll('.product-admin-row').forEach((row) => {
+    const id = row.dataset.id;
+    const product = products.find((p) => p.id === id);
+
+    row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try {
+        await api('POST', `/store/admin/products/${id}`, { guildId: state.guildId, active: !product.active });
+        await loadShop();
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+        e.target.disabled = false;
+      }
+    });
+
+    row.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
+      if (!confirm(`Product "${product.name}" verwijderen? Dit kan niet ongedaan gemaakt worden.`)) return;
+      e.target.disabled = true;
+      try {
+        await api('DELETE', `/store/admin/products/${id}`, { guildId: state.guildId });
+        await loadShop();
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+        e.target.disabled = false;
+      }
+    });
+
+    row.querySelector('[data-action="notify"]').addEventListener('click', async (e) => {
+      if (!confirm(`Iedereen die "${product.name}" heeft gekocht krijgt nu een DM met de huidige versie/changelog. Doorgaan?`)) return;
+      e.target.disabled = true;
+      const original = e.target.textContent;
+      e.target.textContent = 'Versturen...';
+      try {
+        const result = await api('POST', `/store/admin/products/${id}/notify`, { guildId: state.guildId });
+        alert(result.message || `DM klaargezet voor ${result.queued} koper(s).`);
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+      } finally {
+        e.target.disabled = false;
+        e.target.textContent = original;
+      }
+    });
+  });
+}
+
+async function loadShop() {
+  try {
+    const { shopUrl } = await api('GET', '/store/config');
+    $('shopLinkInput').value = shopUrl
+      ? `${shopUrl}/?guild=${state.guildId}`
+      : 'Zet SHOP_ORIGIN in je Render environment (URL van je Vercel-shop)';
+  } catch {
+    $('shopLinkInput').value = 'Kon shop-URL niet ophalen';
+  }
+  try {
+    const { products } = await api('GET', `/store/admin/products/${state.guildId}`);
+    renderProductList(products);
+  } catch (err) {
+    $('productList').innerHTML = `<div class="empty-state">Fout bij laden: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+$('copyShopLinkBtn').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('shopLinkInput').value);
+  const btn = $('copyShopLinkBtn');
+  const original = btn.textContent;
+  btn.textContent = '✅ Gekopieerd';
+  setTimeout(() => (btn.textContent = original), 1500);
+});
+
+$('addProductBtn').addEventListener('click', async () => {
+  const btn = $('addProductBtn');
+  const status = $('addProductStatus');
+
+  const name = $('sp_name').value.trim();
+  const priceEuros = parseFloat($('sp_price').value);
+
+  if (!name) return (status.textContent = '❌ Naam is verplicht'), (status.style.color = 'var(--danger)');
+  if (!priceEuros || priceEuros <= 0) {
+    status.textContent = '❌ Vul een geldige prijs in';
+    status.style.color = 'var(--danger)';
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = 'Opslaan...';
+  status.style.color = 'var(--muted)';
+
+  try {
+    await api('POST', '/store/admin/products', {
+      guildId: state.guildId,
+      name,
+      description: $('sp_description').value.trim() || null,
+      priceCents: Math.round(priceEuros * 100),
+      currency: $('sp_currency').value,
+      version: $('sp_version').value.trim() || null,
+      changelog: $('sp_changelog').value.trim() || null,
+    });
+
+    $('sp_name').value = '';
+    $('sp_description').value = '';
+    $('sp_price').value = '';
+    $('sp_version').value = '';
+    $('sp_changelog').value = '';
+    status.textContent = '✅ Toegevoegd';
+    status.style.color = 'var(--success)';
+    await loadShop();
+  } catch (err) {
+    status.textContent = `❌ ${err.message}`;
+    status.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---- Entry point ----
 (async function init() {

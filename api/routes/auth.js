@@ -16,11 +16,56 @@ const {
   clearSessionCookie,
   setOAuthStateCookie,
   clearOAuthStateCookie,
+  setOAuthReturnCookie,
+  getOAuthReturnCookie,
+  clearOAuthReturnCookie,
   OAUTH_STATE_COOKIE,
 } = require('../utils/session');
 const config = require('../config');
 
 const router = express.Router();
+
+// Bepaalt waar de callback straks naar teruglinkt. Standaard 'dashboard'
+// (zelfde-origin, relatief pad). Voor de shop: als de shop op een ANDER
+// domein draait (bv. Vercel, via SHOP_ORIGIN in .env), moet dat een
+// absolute URL zijn — maar nooit een ongevalideerde, want anders kan
+// iemand een phishing-link maken die na een echte Discord-login naar een
+// willekeurige site doorstuurt (open redirect). Alleen een return-URL
+// waarvan de origin exact overeenkomt met de geconfigureerde SHOP_ORIGIN
+// wordt vertrouwd; anders valt dit terug op de eigen /shop/ pagina
+// (zelfde-origin, alleen relevant als shop en API op hetzelfde domein
+// draaien) of simpelweg de kale SHOP_ORIGIN-root.
+function resolveReturnTarget(req) {
+  if (req.query.from !== 'shop') return 'dashboard';
+
+  const requested = req.query.return;
+  if (requested && config.shopOrigin) {
+    try {
+      if (new URL(String(requested)).origin === new URL(config.shopOrigin).origin) {
+        return String(requested);
+      }
+    } catch {
+      // Geen geldige URL — negeren en op de fallbacks hieronder terugvallen.
+    }
+  }
+
+  return config.shopOrigin || 'shop';
+}
+
+// Bouwt de uiteindelijke redirect-URL voor een return-target zoals
+// hierboven, met een paar query-params erbij (bv. login_error).
+function buildRedirectUrl(returnTarget, queryParams) {
+  const qs = new URLSearchParams(queryParams).toString();
+
+  if (returnTarget === 'dashboard' || returnTarget === 'shop') {
+    return `/${returnTarget}/${qs ? `?${qs}` : ''}`;
+  }
+
+  // Absolute URL (SHOP_ORIGIN, met of zonder specifiek pad erbij).
+  const url = new URL(returnTarget);
+  for (const [key, value] of new URLSearchParams(qs)) url.searchParams.set(key, value);
+  return url.toString();
+}
 
 // GET /auth/discord — kicks off the OAuth2 flow.
 router.get('/discord', (req, res) => {
@@ -32,6 +77,7 @@ router.get('/discord', (req, res) => {
 
   const state = crypto.randomBytes(24).toString('base64url');
   setOAuthStateCookie(res, state);
+  setOAuthReturnCookie(res, resolveReturnTarget(req));
   res.redirect(oauth.buildAuthorizeUrl(state));
 });
 
@@ -41,22 +87,25 @@ router.get(
   asyncHandler(async (req, res) => {
     const { code, state, error: oauthError } = req.query;
 
+    const returnTo = getOAuthReturnCookie(req);
+    clearOAuthReturnCookie(res);
+
     if (oauthError) {
-      return res.redirect(`/dashboard/?login_error=${encodeURIComponent(String(oauthError))}`);
+      return res.redirect(buildRedirectUrl(returnTo, { login_error: String(oauthError) }));
     }
 
     const cookies = parseCookies(req);
     clearOAuthStateCookie(res);
 
     if (!code || !state || !cookies[OAUTH_STATE_COOKIE] || state !== cookies[OAUTH_STATE_COOKIE]) {
-      return res.redirect('/dashboard/?login_error=invalid_state');
+      return res.redirect(buildRedirectUrl(returnTo, { login_error: 'invalid_state' }));
     }
 
     let tokenData;
     try {
       tokenData = await oauth.exchangeCode(String(code));
     } catch (err) {
-      return res.redirect(`/dashboard/?login_error=${encodeURIComponent('token_exchange_failed')}`);
+      return res.redirect(buildRedirectUrl(returnTo, { login_error: 'token_exchange_failed' }));
     }
 
     const [discordUser, discordGuilds] = await Promise.all([
@@ -91,7 +140,7 @@ router.get(
       guilds,
     });
 
-    res.redirect('/dashboard/');
+    res.redirect(buildRedirectUrl(returnTo, {}));
   })
 );
 

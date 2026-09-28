@@ -28,6 +28,25 @@ const config = {
     clientSecret: process.env.DISCORD_CLIENT_SECRET,
     redirectUri: process.env.DISCORD_REDIRECT_URI || (PUBLIC_URL ? `${PUBLIC_URL}/auth/discord/callback` : ''),
   },
+
+  // Webshop — echte betalingen via Stripe Checkout. Alle drie komen uit
+  // je Stripe dashboard (Developers > API keys, en Developers > Webhooks
+  // voor de signing secret nadat je het webhook-endpoint hebt aangemaakt).
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || null,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || null,
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
+  },
+
+  // Zet dit als de shop-pagina (public/shop) LOS van deze API gedeployed
+  // wordt (bv. op Vercel, terwijl bot+API op Render blijven). Geen
+  // trailing slash, bv. https://aurex-shop.vercel.app. Nodig voor CORS
+  // (welke origin mag credentials:'include' fetches doen) en om na
+  // Discord-login veilig terug te sturen naar dat domein (zie auth.js —
+  // alleen een return-URL die exact op dit domein uitkomt wordt
+  // vertrouwd, ter voorkoming van open-redirect misbruik).
+  // Laat leeg als de shop gewoon op hetzelfde domein blijft (/shop).
+  shopOrigin: process.env.SHOP_ORIGIN ? process.env.SHOP_ORIGIN.replace(/\/$/, '') : null,
 };
 
 module.exports = config;

@@ -15,6 +15,7 @@ const config = require('../config');
 
 const SESSION_COOKIE = 'frp_session';
 const OAUTH_STATE_COOKIE = 'frp_oauth_state';
+const OAUTH_RETURN_COOKIE = 'frp_oauth_return';
 
 function sign(payload, maxAgeMs) {
   const data = { ...payload, exp: Date.now() + maxAgeMs };
@@ -75,26 +76,37 @@ function getSessionUser(req) {
   return verify(cookies[SESSION_COOKIE]);
 }
 
-function setCookie(res, name, value, maxAgeMs, { httpOnly = true } = {}) {
-  const secure = process.env.NODE_ENV === 'production' ? ' Secure;' : '';
+function setCookie(res, name, value, maxAgeMs, { httpOnly = true, sameSite = 'Lax' } = {}) {
+  // SameSite=None is required for the session cookie once the webshop
+  // runs on a different origin (SHOP_ORIGIN, e.g. a Vercel deploy) and
+  // does credentials:'include' fetches to this API — browsers refuse to
+  // attach Lax/Strict cookies to cross-site requests. SameSite=None is
+  // only valid together with Secure, so that flips on automatically
+  // whenever it's used (this means: no cross-origin shop testing over
+  // plain http locally — use https there, Render/Vercel already are).
+  const secure = sameSite === 'None' || process.env.NODE_ENV === 'production' ? ' Secure;' : '';
   const maxAge = Math.max(0, Math.floor(maxAgeMs / 1000));
   const httpOnlyPart = httpOnly ? ' HttpOnly;' : '';
-  const cookie = `${name}=${encodeURIComponent(value)};${httpOnlyPart}${secure} Path=/; Max-Age=${maxAge}; SameSite=Lax`;
+  const cookie = `${name}=${encodeURIComponent(value)};${httpOnlyPart}${secure} Path=/; Max-Age=${maxAge}; SameSite=${sameSite}`;
   const existing = res.getHeader('Set-Cookie');
   const next = existing ? [].concat(existing, cookie) : cookie;
   res.setHeader('Set-Cookie', next);
 }
 
-function clearCookie(res, name) {
-  setCookie(res, name, '', 0);
+function clearCookie(res, name, options) {
+  setCookie(res, name, '', 0, options);
 }
 
 function setSessionCookie(res, payload, maxAgeMs = config.session.maxAgeMs) {
-  setCookie(res, SESSION_COOKIE, sign(payload, maxAgeMs), maxAgeMs);
+  // Zie de uitleg bij setCookie hierboven: SameSite=None zodra de shop op
+  // een ander domein kan draaien, anders het gewone/veiligere Lax.
+  setCookie(res, SESSION_COOKIE, sign(payload, maxAgeMs), maxAgeMs, {
+    sameSite: config.shopOrigin ? 'None' : 'Lax',
+  });
 }
 
 function clearSessionCookie(res) {
-  clearCookie(res, SESSION_COOKIE);
+  clearCookie(res, SESSION_COOKIE, { sameSite: config.shopOrigin ? 'None' : 'Lax' });
 }
 
 // Short-lived cookie used only to defend the OAuth redirect against CSRF
@@ -107,6 +119,23 @@ function clearOAuthStateCookie(res) {
   clearCookie(res, OAUTH_STATE_COOKIE);
 }
 
+// Onthoudt, alleen voor de duur van de OAuth-rondgang, of iemand vanaf het
+// dashboard of vanaf de publieke webshop is ingelogd — zodat de callback
+// straks naar de juiste plek terugstuurt in plaats van altijd naar
+// /dashboard/.
+function setOAuthReturnCookie(res, target) {
+  setCookie(res, OAUTH_RETURN_COOKIE, target, 5 * 60 * 1000);
+}
+
+function getOAuthReturnCookie(req) {
+  const cookies = parseCookies(req);
+  return cookies[OAUTH_RETURN_COOKIE] || 'dashboard';
+}
+
+function clearOAuthReturnCookie(res) {
+  clearCookie(res, OAUTH_RETURN_COOKIE);
+}
+
 module.exports = {
   SESSION_COOKIE,
   OAUTH_STATE_COOKIE,
@@ -116,4 +145,7 @@ module.exports = {
   clearSessionCookie,
   setOAuthStateCookie,
   clearOAuthStateCookie,
+  setOAuthReturnCookie,
+  getOAuthReturnCookie,
+  clearOAuthReturnCookie,
 };

@@ -52,6 +52,7 @@
       <button class="nav-item" data-tab="welcome">👋 Welkomstbericht</button>
       <button class="nav-item" data-tab="verify">🔐 Verificatie</button>
       <button class="nav-item" data-tab="rules">📜 Regels</button>
+      <button class="nav-item" data-tab="shop">🛒 Webshop</button>
     </nav>
 
     <div class="sidebar-footer">
@@ -509,6 +510,52 @@
       <div class="save-bar">
         <button id="saveRulesBtn" class="btn btn-primary">💾 Instellingen opslaan</button>
         <span id="saveRulesStatus" class="save-status"></span>
+      </div>
+    </section>
+
+    <section id="tab-shop" class="tab-panel hidden">
+      <div class="panel-card">
+        <h2>Shop-link</h2>
+        <p class="muted hint">Dit is de publieke pagina waar mensen producten kunnen bekijken en kopen. Deel deze link, bv. als een kanaalonderwerp of vastgezet bericht.</p>
+        <div class="color-row">
+          <input id="shopLinkInput" type="text" readonly />
+          <button id="copyShopLinkBtn" class="btn btn-ghost btn-small">Kopieer</button>
+        </div>
+      </div>
+
+      <div class="panel-card">
+        <h2>Nieuw product</h2>
+        <label>Naam</label>
+        <input id="sp_name" type="text" maxlength="200" placeholder="Bv. Discord Bot Template Pro" />
+
+        <label>Omschrijving</label>
+        <textarea id="sp_description" rows="3" maxlength="4000"></textarea>
+
+        <label>Prijs <span class="hint">in hele euro's/centen, bv. 19.99</span></label>
+        <input id="sp_price" type="number" step="0.01" min="0.01" placeholder="19.99" />
+
+        <label>Valuta</label>
+        <select id="sp_currency">
+          <option value="eur">EUR</option>
+          <option value="usd">USD</option>
+          <option value="gbp">GBP</option>
+        </select>
+
+        <label>Versie <span class="hint">optioneel, bv. 1.0.0</span></label>
+        <input id="sp_version" type="text" maxlength="100" placeholder="1.0.0" />
+
+        <label>Changelog <span class="hint">optioneel — wordt meegestuurd bij "Stuur update"</span></label>
+        <textarea id="sp_changelog" rows="3" maxlength="4000"></textarea>
+
+        <div class="save-bar">
+          <button id="addProductBtn" class="btn btn-primary">➕ Product toevoegen</button>
+          <span id="addProductStatus" class="save-status"></span>
+        </div>
+      </div>
+
+      <div class="panel-card">
+        <h2>Producten</h2>
+        <div id="productList" class="product-admin-list"></div>
       </div>
     </section>
   </main>

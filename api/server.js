@@ -15,6 +15,8 @@ const verifyRoutes = require('./routes/verify');
 const rulesRoutes = require('./routes/rules');
 const authRoutes = require('./routes/auth');
 const discordGuildsRoutes = require('./routes/discordGuilds');
+const storeRoutes = require('./routes/store');
+const stripeWebhookHandler = require('./routes/storeWebhook');
 const { initDb } = require('./database');
 const config = require('./config');
 const { requireApiKey } = require('./middleware/auth');
@@ -40,6 +42,12 @@ if (!config.discord.clientId || !config.discord.clientSecret) {
   );
 }
 
+if (!config.stripe.secretKey || !config.stripe.webhookSecret) {
+  console.warn(
+    '[CONFIG WARNING] STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET ontbreken — de webshop-checkout en betaalbevestiging werken dan niet.'
+  );
+}
+
 const app = express();
 
 const path = require('path');
@@ -55,6 +63,33 @@ const ready = new Promise((resolve) => {
 
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
+
+// ---- CORS voor de los gehoste webshop (bv. Vercel) ----
+// Alleen de ene geconfigureerde SHOP_ORIGIN mag credentials:'include'
+// requests doen — nooit '*', want dat is niet toegestaan samen met
+// cookies en zou ook elke willekeurige site de sessie laten gebruiken.
+// Zonder SHOP_ORIGIN gebeurt er niets: dan blijft alles same-origin.
+if (config.shopOrigin) {
+  app.use((req, res, next) => {
+    if (req.headers.origin === config.shopOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', config.shopOrigin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
+}
+
+// MUST be mounted before express.json(): Stripe's signature check needs
+// the raw, untouched request body. Once express.json() below has parsed
+// a request, that raw body is gone — so this route can never move under
+// the regular /store router (which uses express.json() like every other
+// route here).
+app.post('/store/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+
 app.use(express.json({ limit: '100kb' }));
 
 // ---- Global rate limiting ----
@@ -91,6 +126,10 @@ app.use('/tickets', ticketsRoutes);
 app.use('/welcome', welcomeRoutes);
 app.use('/verify', verifyRoutes);
 app.use('/rules', rulesRoutes);
+// Publieke productenlijst + checkout leven hier ook al onder /store (het
+// hierboven gemounte /store/webhook is de enige uitzondering die apart
+// staat, om de raw-body reden hierboven).
+app.use('/store', storeRoutes);
 
 // ---- Dashboard login ("Inloggen met Discord") ----
 // No requireApiKey here — this is what lets the browser authenticate
@@ -103,6 +142,10 @@ app.use('/discord-guilds', requireApiKey, discordGuildsRoutes);
 // ---- Dashboard (static; the page itself authenticates via the
 // httpOnly session cookie set by /auth, not a key typed into the UI) ----
 app.use('/dashboard', express.static(path.join(__dirname, '..', 'public', 'dashboard')));
+
+// De webshop-pagina zelf staat NIET meer in dit project: die is een los
+// project (map shop-site/) dat apart op bv. Vercel draait en via
+// SHOP_ORIGIN + CORS met deze API praat.
 
 // ---- 404 handler ----
 app.use((req, res) => {

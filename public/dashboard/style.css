@@ -75,7 +75,8 @@ label {
 input[type="text"],
 input[type="password"],
 input[type="number"],
-textarea {
+textarea,
+select {
   width: 100%;
   background: #0e1119;
   border: 1px solid var(--card-border);
@@ -91,7 +92,8 @@ textarea {
 input[type="text"]:focus,
 input[type="password"]:focus,
 input[type="number"]:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--accent);
 }
 
@@ -415,3 +417,23 @@ input[type="color"] {
   color: #a5b4fc;
 }
 .ticket-badge.claimed { background: rgba(234, 179, 8, 0.15); color: #fde68a; }
+
+/* ---- Webshop tab ---- */
+.product-admin-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.product-admin-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  background: #0e1119;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.product-admin-info { display: flex; flex-direction: column; gap: 4px; }
+.product-admin-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.product-version {
+  font-size: 11px;
+  color: var(--muted);
+  background: #1a1f2e;
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-left: 6px;
+}
