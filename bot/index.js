@@ -12,6 +12,7 @@ const ticketInteractions = require('./handlers/ticketInteractions');
 const verifyInteractions = require('./handlers/verifyInteractions');
 const { handleMemberJoin } = require('./utils/welcome');
 const api = require('./utils/api');
+const { startDmQueue } = require('./utils/dmQueue');
 
 const client = new Client({
   // GuildMembers is a privileged intent — it must also be turned ON for
@@ -54,6 +55,10 @@ client.once('ready', async () => {
   } catch (err) {
     logger.error('Kon serverlijst niet synchroniseren met de API:', err);
   }
+
+  // Webshop: stuurt periodiek klaarstaande DM's (nieuwe productversie,
+  // aankoopbevestiging) die de API in de wachtrij heeft gezet.
+  startDmQueue(client);
 });
 
 // Keeps the dashboard's server list live as the bot is added to / removed

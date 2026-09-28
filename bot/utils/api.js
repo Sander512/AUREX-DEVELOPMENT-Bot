@@ -83,6 +83,19 @@ const api = {
   getRulesConfig: (guildId) => request('GET', `/rules/config/${guildId}`),
   updateRulesConfig: (guildId, fields) => request('POST', '/rules/config', { guildId, ...fields }),
   setRulesMessageId: (guildId, messageId) => request('POST', '/rules/message', { guildId, messageId }),
+
+  // ---- Webshop DM-wachtrij ----
+  // De API heeft zelf geen Discord-verbinding, dus zet klaarstaande DM's in
+  // een tabel; de bot pollt die hier leeg (zie bot/utils/dmQueue.js).
+  getPendingDms: (limit = 10) => request('GET', `/store/pending-dms?limit=${limit}`),
+  markDmStatus: (id, status) => request('POST', `/store/pending-dms/${id}/status`, { status }),
+
+  // ---- Webshop producten (ook beheerbaar via Discord-commando's) ----
+  listProducts: (guildId) => request('GET', `/store/admin/products/${guildId}`),
+  addProduct: (guildId, fields) => request('POST', '/store/admin/products', { guildId, ...fields }),
+  updateProduct: (guildId, id, fields) => request('POST', `/store/admin/products/${id}`, { guildId, ...fields }),
+  deleteProduct: (guildId, id) => request('DELETE', `/store/admin/products/${id}`, { guildId }),
+  notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),
 };
 
 module.exports = api;
