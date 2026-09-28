@@ -531,8 +531,11 @@
         <label>Omschrijving</label>
         <textarea id="sp_description" rows="3" maxlength="4000"></textarea>
 
-        <label>Prijs <span class="hint">in hele euro's/centen, bv. 19.99</span></label>
-        <input id="sp_price" type="number" step="0.01" min="0.01" placeholder="19.99" />
+        <label>Prijs <span class="hint">bv. 19.99 — vul 0 in voor een gratis product</span></label>
+        <input id="sp_price" type="number" step="0.01" min="0" placeholder="19.99" />
+
+        <label>Bestand <span class="hint">verplicht — dit ontvangen kopers per DM (max 8 MB, tip: zip)</span></label>
+        <input id="sp_file" type="file" />
 
         <label>Valuta</label>
         <select id="sp_currency">

@@ -755,7 +755,7 @@ function renderProductList(products) {
         <div><strong>${escapeHtml(p.name)}</strong> ${p.active ? '' : '<span class="hint">(inactief)</span>'} ${
           p.version ? `<span class="product-version">v${escapeHtml(p.version)}</span>` : ''
         }</div>
-        <div class="muted" style="font-size:13px;">${formatPriceAdmin(p.priceCents, p.currency)}</div>
+        <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}</div>
       </div>
       <div class="product-admin-actions">
         <button class="btn btn-ghost btn-small" data-action="toggle">${p.active ? 'Deactiveren' : 'Activeren'}</button>
@@ -843,20 +843,23 @@ $('addProductBtn').addEventListener('click', async () => {
 
   const name = $('sp_name').value.trim();
   const priceEuros = parseFloat($('sp_price').value);
+  const file = $('sp_file').files[0];
 
   if (!name) return (status.textContent = '❌ Naam is verplicht'), (status.style.color = 'var(--danger)');
-  if (!priceEuros || priceEuros <= 0) {
-    status.textContent = '❌ Vul een geldige prijs in';
+  if (Number.isNaN(priceEuros) || priceEuros < 0 || (priceEuros > 0 && priceEuros < 0.5)) {
+    status.textContent = '❌ Vul een geldige prijs in (0 = gratis, anders minimaal 0,50)';
     status.style.color = 'var(--danger)';
     return;
   }
+  if (!file) return (status.textContent = '❌ Kies eerst een bestand'), (status.style.color = 'var(--danger)');
+  if (file.size > 8 * 1024 * 1024) return (status.textContent = '❌ Bestand is groter dan 8 MB'), (status.style.color = 'var(--danger)');
 
   btn.disabled = true;
   status.textContent = 'Opslaan...';
   status.style.color = 'var(--muted)';
 
   try {
-    await api('POST', '/store/admin/products', {
+    const { product } = await api('POST', '/store/admin/products', {
       guildId: state.guildId,
       name,
       description: $('sp_description').value.trim() || null,
@@ -868,6 +871,25 @@ $('addProductBtn').addEventListener('click', async () => {
       imageUrls: $('sp_images').value.split('\n').map((l) => l.trim()).filter(Boolean),
     });
 
+    try {
+      const dataBase64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1]);
+        r.onerror = () => reject(new Error('Bestand lezen mislukt'));
+        r.readAsDataURL(file);
+      });
+      await api('POST', `/store/admin/product-file/${product.id}`, {
+        guildId: state.guildId,
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        dataBase64,
+      });
+    } catch (uploadErr) {
+      // Geen product zonder bestand laten staan.
+      await api('DELETE', `/store/admin/products/${product.id}`, { guildId: state.guildId }).catch(() => {});
+      throw uploadErr;
+    }
+
     $('sp_name').value = '';
     $('sp_description').value = '';
     $('sp_price').value = '';
@@ -875,6 +897,7 @@ $('addProductBtn').addEventListener('click', async () => {
     $('sp_changelog').value = '';
     $('sp_category').value = '';
     $('sp_images').value = '';
+    $('sp_file').value = '';
     status.textContent = '✅ Toegevoegd';
     status.style.color = 'var(--success)';
     await loadShop();

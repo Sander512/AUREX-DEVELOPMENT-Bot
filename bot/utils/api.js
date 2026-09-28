@@ -95,6 +95,9 @@ const api = {
   addProduct: (guildId, fields) => request('POST', '/store/admin/products', { guildId, ...fields }),
   updateProduct: (guildId, id, fields) => request('POST', `/store/admin/products/${id}`, { guildId, ...fields }),
   deleteProduct: (guildId, id) => request('DELETE', `/store/admin/products/${id}`, { guildId }),
+  uploadProductFile: (guildId, id, file) =>
+    request('POST', `/store/admin/product-file/${id}`, { guildId, ...file }),
+  getProductFile: (productId) => request('GET', `/store/product-file/${productId}`),
   notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),
 };
 

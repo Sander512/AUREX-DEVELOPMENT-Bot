@@ -2,6 +2,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
+const { attachmentToUpload } = require('../utils/productFile');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -9,7 +10,10 @@ module.exports = {
     .setDescription('[Management] Voeg een product toe aan de webshop')
     .addStringOption((opt) => opt.setName('naam').setDescription('Productnaam').setRequired(true).setMaxLength(200))
     .addNumberOption((opt) =>
-      opt.setName('prijs').setDescription('Prijs, bv. 19.99').setRequired(true).setMinValue(0.01)
+      opt.setName('prijs').setDescription('Prijs, bv. 19.99 — vul 0 in voor een gratis product').setRequired(true).setMinValue(0)
+    )
+    .addAttachmentOption((opt) =>
+      opt.setName('bestand').setDescription('Het bestand dat kopers ontvangen (max 8 MB, tip: zip)').setRequired(true)
     )
     .addStringOption((opt) => opt.setName('omschrijving').setDescription('Korte omschrijving').setMaxLength(4000))
     .addStringOption((opt) => opt.setName('versie').setDescription('Versienummer, bv. 1.0.0').setMaxLength(100))
@@ -29,29 +33,59 @@ module.exports = {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const priceEuros = interaction.options.getNumber('prijs', true);
+    const priceCents = Math.round(priceEuros * 100);
 
+    if (priceCents > 0 && priceCents < 50) {
+      await interaction.editReply({
+        embeds: [embeds.error('Prijs te laag', 'Een betaald product kost minimaal 0,50. Vul 0 in voor een gratis product.')],
+      });
+      return;
+    }
+
+    let upload;
     try {
-      const { product } = await api.addProduct(interaction.guildId, {
+      upload = await attachmentToUpload(interaction.options.getAttachment('bestand', true));
+    } catch (err) {
+      await interaction.editReply({ embeds: [embeds.error('Bestand niet gelukt', err.message)] });
+      return;
+    }
+
+    let product;
+    try {
+      ({ product } = await api.addProduct(interaction.guildId, {
         name: interaction.options.getString('naam', true),
-        priceCents: Math.round(priceEuros * 100),
+        priceCents,
         description: interaction.options.getString('omschrijving') || null,
         version: interaction.options.getString('versie') || null,
         changelog: interaction.options.getString('changelog') || null,
         category: interaction.options.getString('categorie') || null,
         imageUrls: (interaction.options.getString('afbeeldingen') || '').split(/[\s,]+/).filter(Boolean),
         currency: interaction.options.getString('valuta') || 'eur',
-      });
-
-      await interaction.editReply({
-        embeds: [
-          embeds.success(
-            'Product toegevoegd',
-            `**${product.name}** staat nu in de webshop voor **${(product.priceCents / 100).toFixed(2)} ${product.currency.toUpperCase()}**.\nGebruik \`/product-list\` om alle producten te zien, of \`/product-update\` om 'm later bij te werken.`
-          ),
-        ],
-      });
+      }));
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Toevoegen mislukt', err.message)] });
+      return;
     }
+
+    try {
+      await api.uploadProductFile(interaction.guildId, product.id, upload);
+    } catch (err) {
+      // Geen product zonder bestand in de shop laten staan.
+      await api.deleteProduct(interaction.guildId, product.id).catch(() => {});
+      await interaction.editReply({
+        embeds: [embeds.error('Bestand uploaden mislukt', `Het product is niet toegevoegd. ${err.message}`)],
+      });
+      return;
+    }
+
+    const priceText = product.priceCents === 0 ? 'Gratis' : `${(product.priceCents / 100).toFixed(2)} ${product.currency.toUpperCase()}`;
+    await interaction.editReply({
+      embeds: [
+        embeds.success(
+          'Product toegevoegd',
+          `**${product.name}** staat nu in de webshop.\n**Prijs:** ${priceText}\n**Bestand:** ${upload.fileName}\n\nGebruik \`/product-list\` voor een overzicht of \`/product-update\` om het later bij te werken.`
+        ),
+      ],
+    });
   },
 };

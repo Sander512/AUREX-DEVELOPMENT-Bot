@@ -24,12 +24,13 @@ module.exports = {
       const lines = products.map((p) => {
         const status = p.active ? '🟢' : '⚪';
         const version = p.version ? ` (v${p.version})` : '';
-        const price = `${(p.priceCents / 100).toFixed(2)} ${p.currency.toUpperCase()}`;
-        return `${status} **${p.name}**${version} — ${price}`;
+        const price = p.priceCents === 0 ? 'Gratis' : `${(p.priceCents / 100).toFixed(2)} ${p.currency.toUpperCase()}`;
+        const fileNote = p.hasFile ? '' : ' ⚠️ geen bestand';
+        return `${status} **${p.name}**${version} — ${price}${fileNote}`;
       });
 
       await interaction.editReply({
-        embeds: [embeds.info('Webshop producten', `${lines.join('\n')}\n\n🟢 = actief · ⚪ = inactief`)],
+        embeds: [embeds.info('Webshop producten', `${lines.join('\n')}\n\n🟢 = actief · ⚪ = inactief\n⚠️ = nog geen bestand gekoppeld; gebruik `/product-update` met de optie *bestand*.`)],
       });
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Laden mislukt', err.message)] });

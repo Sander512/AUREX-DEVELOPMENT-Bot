@@ -229,6 +229,18 @@ CREATE TABLE IF NOT EXISTS pending_dms (
   sent_at INTEGER
 );
 
+-- Het bestand dat een koper na betaling (of bij een gratis product direct)
+-- per DM ontvangt. Eén bestand per product; in de database opgeslagen zodat
+-- het ook na een herstart/redeploy op Render nog bestaat.
+CREATE TABLE IF NOT EXISTS product_files (
+  product_id TEXT PRIMARY KEY,
+  file_name TEXT NOT NULL,
+  mime_type TEXT,
+  size_bytes INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);
@@ -264,6 +276,8 @@ const MIGRATIONS = [
   // Webshop-uiterlijk: categorie en productfoto's (JSON-array van URL's).
   `ALTER TABLE products ADD COLUMN category TEXT`,
   `ALTER TABLE products ADD COLUMN image_urls TEXT`,
+  // Welke product-bestanden er bij een DM meegestuurd moeten worden (JSON-array van product-id's).
+  `ALTER TABLE pending_dms ADD COLUMN file_product_ids TEXT`,
 ];
 
 // One-time data migration: existing rows only have the old single

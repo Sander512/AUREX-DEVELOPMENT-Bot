@@ -2,6 +2,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
+const { attachmentToUpload } = require('../utils/productFile');
 
 async function findProductByName(guildId, name) {
   const { products } = await api.listProducts(guildId);
@@ -17,7 +18,8 @@ module.exports = {
     )
     .addStringOption((opt) => opt.setName('nieuwe_versie').setDescription('Nieuw versienummer, bv. 1.1.0').setMaxLength(100))
     .addStringOption((opt) => opt.setName('changelog').setDescription('Wat is er veranderd').setMaxLength(4000))
-    .addNumberOption((opt) => opt.setName('nieuwe_prijs').setDescription('Nieuwe prijs, bv. 24.99').setMinValue(0.01))
+    .addNumberOption((opt) => opt.setName('nieuwe_prijs').setDescription('Nieuwe prijs, bv. 24.99 (0 = gratis)').setMinValue(0))
+    .addAttachmentOption((opt) => opt.setName('bestand').setDescription('Nieuw bestand voor kopers (vervangt het huidige)'))
     .addStringOption((opt) => opt.setName('omschrijving').setDescription('Nieuwe omschrijving').setMaxLength(4000))
     .addStringOption((opt) => opt.setName('categorie').setDescription('Nieuwe categorie').setMaxLength(60))
     .addStringOption((opt) =>
@@ -80,13 +82,32 @@ module.exports = {
     if (categorie !== null) fields.category = categorie;
     if (afbeeldingen !== null) fields.imageUrls = afbeeldingen.split(/[\s,]+/).filter(Boolean);
 
-    if (Object.keys(fields).length === 0) {
+    const newFile = interaction.options.getAttachment('bestand');
+    if (fields.priceCents !== undefined && fields.priceCents > 0 && fields.priceCents < 50) {
+      await interaction.editReply({
+        embeds: [embeds.error('Prijs te laag', 'Een betaald product kost minimaal 0,50. Vul 0 in voor een gratis product.')],
+      });
+      return;
+    }
+
+    let upload = null;
+    if (newFile) {
+      try {
+        upload = await attachmentToUpload(newFile);
+      } catch (err) {
+        await interaction.editReply({ embeds: [embeds.error('Bestand niet gelukt', err.message)] });
+        return;
+      }
+    }
+
+    if (Object.keys(fields).length === 0 && !upload) {
       await interaction.editReply({ embeds: [embeds.warning('Niets om bij te werken', 'Vul minstens één veld in om te wijzigen.')] });
       return;
     }
 
     try {
-      await api.updateProduct(interaction.guildId, product.id, fields);
+      if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
+      if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
       return;

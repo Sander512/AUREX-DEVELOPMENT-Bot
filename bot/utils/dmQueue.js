@@ -5,16 +5,14 @@
 // in the dashboard, or a completed Stripe payment, actually turns into a
 // real DM — the bot is the only part of this app that can send one.
 
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const api = require('./api');
 const logger = require('./logger');
 const config = require('../config');
 
 const POLL_INTERVAL_MS = 20 * 1000;
 
-// Bouwt de embed rechtstreeks op (i.p.v. embeds.info) omdat embed_title
-// hier al zijn eigen emoji bevat ("🔔 Update voor ...", "✅ Bedankt voor
-// je aankoop: ...") — embeds.info zou daar nog eens "ℹ️ " voor plakken.
+// Bouwt de embed rechtstreeks op zodat de titel exact blijft zoals de API hem meegeeft.
 function buildEmbed(dm) {
   return new EmbedBuilder()
     .setTimestamp()
@@ -36,7 +34,20 @@ async function processOnce(client) {
   for (const dm of dms) {
     try {
       const user = await client.users.fetch(dm.discordId);
+
+      // Eerst de bestanden ophalen: lukt dat niet, dan sturen we geen
+      // "je bestand volgt"-bericht zonder bestand.
+      const files = [];
+      for (const productId of dm.fileProductIds || []) {
+        const f = await api.getProductFile(productId);
+        files.push(new AttachmentBuilder(Buffer.from(f.dataBase64, 'base64'), { name: f.fileName }));
+      }
+
       await user.send({ embeds: [buildEmbed(dm)] });
+      // Eén bericht per bestand, zodat de 10 MB-limiet van Discord per bericht niet overschreden wordt.
+      for (const file of files) {
+        await user.send({ files: [file] });
+      }
       await api.markDmStatus(dm.id, 'sent');
     } catch (err) {
       // Meestal: gebruiker heeft DM's van serverleden/de bot uitstaan.

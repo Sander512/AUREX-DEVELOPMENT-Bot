@@ -10,7 +10,14 @@
 
 const config = require('../config');
 const { db } = require('../database');
-const { getPurchaseByStripeSessionId, getPurchasesByOrderId, getProductRow, queuePendingDm, formatPrice } = require('../utils/storeHelpers');
+const {
+  getPurchaseByStripeSessionId,
+  getPurchasesByOrderId,
+  getProductRow,
+  queuePendingDm,
+  filterProductsWithFile,
+  formatPrice,
+} = require('../utils/storeHelpers');
 
 const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretKey) : null;
 
@@ -49,10 +56,13 @@ async function markPurchaseCompleted(session) {
     total += row.amount_cents;
   }
 
+  const fileIds = await filterProductsWithFile(rows.map((r) => r.product_id));
+
   await queuePendingDm(
     rows[0].discord_id,
-    '✅ Bedankt voor je aankoop!',
-    `Je betaling van ${formatPrice(total, rows[0].currency)} is gelukt.\n\n**Gekocht:**\n${names.map((n) => `• ${n}`).join('\n')}`
+    'Bestelbevestiging',
+    `Bedankt voor je bestelling. Je betaling van ${formatPrice(total, rows[0].currency)} is ontvangen.\n\n**Producten**\n${names.map((n) => `• ${n}`).join('\n')}\n\nJe bestand${fileIds.length === 1 ? '' : 'en'} ${fileIds.length === 1 ? 'volgt' : 'volgen'} direct hieronder in dit gesprek.`,
+    fileIds
   );
 }
 

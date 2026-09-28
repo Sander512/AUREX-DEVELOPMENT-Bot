@@ -30,12 +30,41 @@ async function hasCompletedPurchase(productId, discordId) {
 
 // Queues a DM for the bot to send on its next poll (see bot/utils/dmQueue.js).
 // The API has no Discord connection of its own — this is the hand-off point.
-async function queuePendingDm(discordId, embedTitle, embedDescription) {
+async function queuePendingDm(discordId, embedTitle, embedDescription, fileProductIds = []) {
   await db.execute({
-    sql: `INSERT INTO pending_dms (id, discord_id, embed_title, embed_description, status, created_at)
-          VALUES (?, ?, ?, ?, 'pending', ?)`,
-    args: [crypto.randomUUID(), discordId, embedTitle, String(embedDescription).slice(0, 3800), Date.now()],
+    sql: `INSERT INTO pending_dms (id, discord_id, embed_title, embed_description, status, created_at, file_product_ids)
+          VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+    args: [
+      crypto.randomUUID(),
+      discordId,
+      embedTitle,
+      String(embedDescription).slice(0, 3800),
+      Date.now(),
+      fileProductIds.length ? JSON.stringify(fileProductIds) : null,
+    ],
   });
+}
+
+// Geeft alleen de product-id's terug waarvoor daadwerkelijk een bestand is opgeslagen.
+async function filterProductsWithFile(productIds) {
+  const out = [];
+  for (const id of productIds) {
+    const r = await db.execute({ sql: 'SELECT 1 FROM product_files WHERE product_id = ?', args: [id] });
+    if (r.rows.length) out.push(id);
+  }
+  return out;
+}
+
+async function getProductFile(productId) {
+  const r = await db.execute({ sql: 'SELECT * FROM product_files WHERE product_id = ?', args: [productId] });
+  return r.rows[0] || null;
+}
+
+// libsql geeft BLOB's terug als ArrayBuffer/Uint8Array — altijd naar Buffer.
+function blobToBuffer(data) {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
 function formatPrice(cents, currency) {
@@ -48,5 +77,8 @@ module.exports = {
   getPurchasesByOrderId,
   hasCompletedPurchase,
   queuePendingDm,
+  filterProductsWithFile,
+  getProductFile,
+  blobToBuffer,
   formatPrice,
 };

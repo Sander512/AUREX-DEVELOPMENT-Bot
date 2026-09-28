@@ -16,13 +16,23 @@ const config = require('../config');
 const { isDiscordId, isPositiveInteger } = require('../utils/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireApiKey, requireApiKeyOrGuildAccess, requireSession } = require('../middleware/auth');
-const { getProductRow, hasCompletedPurchase, queuePendingDm } = require('../utils/storeHelpers');
+const {
+  getProductRow,
+  hasCompletedPurchase,
+  queuePendingDm,
+  filterProductsWithFile,
+  getProductFile,
+  blobToBuffer,
+} = require('../utils/storeHelpers');
 
 const router = express.Router();
 
 const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretKey) : null;
 
 const MAX_PRICE_CENTS = 100_000_000; // €1.000.000 — ruim genoeg, voorkomt kromme invoer
+const MIN_PAID_CENTS = 50; // Stripe weigert betalingen onder 50 cent; 0 = gratis product
+// Discord staat voor bots in DM's ongeveer 10 MB per bericht toe; we houden marge.
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const ALLOWED_CURRENCIES = new Set(['eur', 'usd', 'gbp']);
 
 // ---------------------------------------------------------------------
@@ -38,6 +48,14 @@ function parseJsonArray(raw) {
   }
 }
 
+async function getProductWithFlag(id) {
+  const r = await db.execute({
+    sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.id = ?`,
+    args: [id],
+  });
+  return r.rows[0] || null;
+}
+
 function rowToPublicProduct(row) {
   return {
     id: row.id,
@@ -50,6 +68,8 @@ function rowToPublicProduct(row) {
     changelog: row.changelog || '',
     category: row.category || null,
     imageUrls: parseJsonArray(row.image_urls),
+    isFree: row.price_cents === 0,
+    hasFile: !!row.has_file,
   };
 }
 
@@ -85,7 +105,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: 'SELECT * FROM products WHERE guild_id = ? AND active = 1 ORDER BY created_at ASC',
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.guild_id = ? AND p.active = 1 ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
@@ -123,6 +143,12 @@ router.post(
       products.push(product);
     }
 
+    const withFile = new Set(await filterProductsWithFile(products.map((p) => p.id)));
+    const missing = products.find((p) => !withFile.has(p.id));
+    if (missing) {
+      return res.status(409).json({ error: `"${missing.name}" is tijdelijk niet beschikbaar (er is nog geen bestand aan gekoppeld).` });
+    }
+
     if (new Set(products.map((p) => p.guild_id)).size > 1) {
       return res.status(400).json({ error: 'Je kunt niet producten van verschillende shops tegelijk afrekenen.' });
     }
@@ -130,6 +156,40 @@ router.post(
       return res.status(400).json({ error: 'Producten met verschillende valuta kun je niet in één bestelling afrekenen.' });
     }
     const guildId = products[0].guild_id;
+
+    // Gratis producten (prijs 0) gaan niet langs Stripe: direct als afgerond
+    // registreren en het bestand per DM laten versturen.
+    const freeProducts = products.filter((p) => p.price_cents === 0);
+    const paidProducts = products.filter((p) => p.price_cents > 0);
+
+    let freeClaimed = 0;
+    if (freeProducts.length > 0) {
+      const freeOrderId = crypto.randomUUID();
+      const now = Date.now();
+      for (const product of freeProducts) {
+        await db.execute({
+          sql: `INSERT INTO purchases
+                (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, purchased_at)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?)`,
+          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, freeOrderId, product.currency, now, now],
+        });
+      }
+      await queuePendingDm(
+        req.user.discordId,
+        'Je download',
+        `Bedankt voor je bestelling.\n\n**Producten**\n${freeProducts
+          .map((p) => `• ${p.version ? `${p.name} (v${p.version})` : p.name}`)
+          .join('\n')}\n\nJe bestand${freeProducts.length === 1 ? ' volgt' : 'en volgen'} direct hieronder in dit gesprek.`,
+        freeProducts.map((p) => p.id)
+      );
+      freeClaimed = freeProducts.length;
+    }
+
+    if (paidProducts.length === 0) {
+      return res.json({ free: true, claimed: freeClaimed });
+    }
+    products.length = 0;
+    products.push(...paidProducts);
 
     if (!config.publicUrl) {
       return res.status(500).json({ error: 'PUBLIC_URL is niet ingesteld op de server — nodig om na afrekenen terug te sturen.' });
@@ -187,7 +247,7 @@ router.post(
       });
     }
 
-    res.json({ url: session.url });
+    res.json({ url: session.url, claimed: freeClaimed });
   })
 );
 
@@ -215,6 +275,71 @@ router.get(
 // die guild.
 // ---------------------------------------------------------------------
 
+// POST /store/admin/product-file/:id  { guildId, fileName, mimeType, dataBase64 }
+// Koppelt (of vervangt) het bestand dat kopers ontvangen. De body-limiet
+// voor dit pad staat in server.js op 16 MB.
+router.post(
+  '/admin/product-file/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { guildId, fileName, mimeType, dataBase64 } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    const product = await getProductRow(id);
+    if (!product || product.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
+
+    if (typeof fileName !== 'string' || !fileName.trim() || fileName.length > 200) {
+      return res.status(400).json({ error: 'fileName is verplicht (max 200 tekens)' });
+    }
+    if (typeof dataBase64 !== 'string' || dataBase64.length === 0) {
+      return res.status(400).json({ error: 'Er is geen bestand meegestuurd.' });
+    }
+
+    const buffer = Buffer.from(dataBase64, 'base64');
+    if (buffer.length === 0) return res.status(400).json({ error: 'Het bestand is leeg.' });
+    if (buffer.length > MAX_FILE_BYTES) {
+      return res.status(413).json({ error: `Bestand is te groot (max ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB).` });
+    }
+
+    // Bestandsnaam opschonen: geen paden of vreemde tekens.
+    const safeName = fileName.trim().replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').slice(0, 200);
+
+    await db.execute({
+      sql: `INSERT INTO product_files (product_id, file_name, mime_type, size_bytes, data, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id) DO UPDATE SET
+              file_name = excluded.file_name, mime_type = excluded.mime_type,
+              size_bytes = excluded.size_bytes, data = excluded.data, updated_at = excluded.updated_at`,
+      args: [id, safeName, typeof mimeType === 'string' ? mimeType.slice(0, 100) : null, buffer.length, buffer, Date.now()],
+    });
+
+    res.json({ success: true, fileName: safeName, sizeBytes: buffer.length });
+  })
+);
+
+// GET /store/download/:productId — ingelogde koper haalt zijn gekochte
+// bestand zelf op (vangnet voor als DM's van de bot uitstaan).
+router.get(
+  '/download/:productId',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { productId } = req.params;
+    const product = await getProductRow(productId);
+    if (!product) return res.status(404).json({ error: 'Product niet gevonden' });
+    if (!(await hasCompletedPurchase(productId, req.user.discordId))) {
+      return res.status(403).json({ error: 'Je hebt dit product niet gekocht.' });
+    }
+    const file = await getProductFile(productId);
+    if (!file) return res.status(404).json({ error: 'Er is geen bestand gekoppeld aan dit product.' });
+
+    res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${String(file.file_name).replace(/"/g, '')}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(blobToBuffer(file.data));
+  })
+);
+
 // GET /store/admin/products/:guildId — ook inactieve producten, voor het dashboard.
 router.get(
   '/admin/products/:guildId',
@@ -224,7 +349,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: 'SELECT * FROM products WHERE guild_id = ? ORDER BY created_at ASC',
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.guild_id = ? ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
@@ -244,8 +369,11 @@ function validateProductFields(fields, { partial }) {
     if (typeof description !== 'string' || description.length > 4000) return 'description mag max 4000 tekens zijn';
   }
   if (!partial || priceCents !== undefined) {
-    if (!isPositiveInteger(priceCents, MAX_PRICE_CENTS) || priceCents < 1) {
-      return 'priceCents moet een positief geheel getal zijn (prijs in centen, bv. 1999 voor €19,99)';
+    if (!isPositiveInteger(priceCents, MAX_PRICE_CENTS)) {
+      return 'priceCents moet een geheel getal zijn (prijs in centen, bv. 1999 voor €19,99; 0 = gratis)';
+    }
+    if (priceCents > 0 && priceCents < MIN_PAID_CENTS) {
+      return 'De laagste prijs voor een betaald product is 0,50 (betaalprovider-minimum). Gebruik 0 voor een gratis product.';
     }
   }
   if (currency !== undefined) {
@@ -308,7 +436,7 @@ router.post(
       ],
     });
 
-    const row = await getProductRow(id);
+    const row = await getProductWithFlag(id);
     res.status(201).json({ product: rowToAdminProduct(row) });
   })
 );
@@ -365,7 +493,7 @@ router.post(
 
     await db.execute({ sql: `UPDATE products SET ${setClauses.join(', ')} WHERE id = ?`, args });
 
-    const row = await getProductRow(id);
+    const row = await getProductWithFlag(id);
     res.json({ product: rowToAdminProduct(row) });
   })
 );
@@ -382,6 +510,7 @@ router.delete(
     const existing = await getProductRow(id);
     if (!existing || existing.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
 
+    await db.execute({ sql: 'DELETE FROM product_files WHERE product_id = ?', args: [id] });
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [id] });
     res.json({ success: true });
   })
@@ -410,13 +539,14 @@ router.post(
       return res.json({ queued: 0, message: 'Nog niemand heeft dit product gekocht — er is niemand om te DM\'en.' });
     }
 
-    const title = `🔔 Update voor ${product.name}`;
+    const title = `Update voor ${product.name}`;
     const versionLine = product.version ? `**Nieuwe versie:** ${product.version}\n\n` : '';
     const changelogLine = product.changelog ? product.changelog : 'Geen changelog opgegeven.';
     const description = `${versionLine}${changelogLine}`;
 
+    const fileIds = await filterProductsWithFile([id]);
     for (const row of buyers.rows) {
-      await queuePendingDm(row.discord_id, title, description);
+      await queuePendingDm(row.discord_id, title, description, fileIds);
     }
 
     res.json({ queued: buyers.rows.length });
@@ -444,7 +574,24 @@ router.get(
         discordId: r.discord_id,
         embedTitle: r.embed_title,
         embedDescription: r.embed_description,
+        fileProductIds: parseJsonArray(r.file_product_ids),
       })),
+    });
+  })
+);
+
+// GET /store/product-file/:productId — bot haalt het bestand op om mee te sturen in de DM.
+router.get(
+  '/product-file/:productId',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const file = await getProductFile(req.params.productId);
+    if (!file) return res.status(404).json({ error: 'Geen bestand voor dit product' });
+    res.json({
+      fileName: file.file_name,
+      mimeType: file.mime_type,
+      sizeBytes: file.size_bytes,
+      dataBase64: blobToBuffer(file.data).toString('base64'),
     });
   })
 );
