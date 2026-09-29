@@ -163,4 +163,26 @@ client.on('interactionCreate', async (interaction) => {
 client.on('error', (err) => logger.error('Discord client error:', err));
 process.on('unhandledRejection', (err) => logger.error('Unhandled promise rejection:', err));
 
-client.login(config.discord.token);
+// Inloggen met automatische herprobeerpoging en oplopende wachttijd.
+// Zonder dit blijft de bot na een mislukte login (bv. Discord's
+// "global rate limit" na te veel API-verzoeken in korte tijd) gewoon
+// stil liggen tot de volgende handmatige herstart — en die herstart zelf
+// (opnieuw commands registreren + opnieuw inloggen) verlengt vaak juist
+// diezelfde blokkade. Met een backoff die vanzelf langer wacht, herstelt
+// de bot zichzelf zodra Discord de blokkade opheft, zonder dat iemand
+// hoeft te herdeployen.
+const LOGIN_RETRY_START_MS = 30 * 1000; // 30 sec
+const LOGIN_RETRY_MAX_MS = 10 * 60 * 1000; // 10 min
+
+async function loginWithRetry(delayMs = LOGIN_RETRY_START_MS) {
+  try {
+    await client.login(config.discord.token);
+  } catch (err) {
+    logger.error(`Inloggen bij Discord mislukt (${err.message}); nieuwe poging over ${Math.round(delayMs / 1000)} sec.`);
+    setTimeout(() => {
+      loginWithRetry(Math.min(delayMs * 2, LOGIN_RETRY_MAX_MS));
+    }, delayMs);
+  }
+}
+
+loginWithRetry();
