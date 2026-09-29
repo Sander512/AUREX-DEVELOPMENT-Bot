@@ -241,6 +241,18 @@ CREATE TABLE IF NOT EXISTS product_files (
   updated_at INTEGER NOT NULL
 );
 
+-- Eén kanaal per server waar automatisch een overzicht komt te staan van
+-- alle producten die momenteel in de webshop staan (via /product kanaal).
+-- dirty=1 betekent: het aanbod is veranderd sinds de laatste keer dat de
+-- bot het bericht in dat kanaal heeft bijgewerkt.
+CREATE TABLE IF NOT EXISTS product_channel_config (
+  guild_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  message_id TEXT,
+  dirty INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);

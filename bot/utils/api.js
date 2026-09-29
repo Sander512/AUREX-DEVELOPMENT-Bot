@@ -99,6 +99,12 @@ const api = {
     request('POST', `/store/admin/product-file/${id}`, { guildId, ...file }),
   getProductFile: (productId) => request('GET', `/store/product-file/${productId}`),
   notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),
+  getPublicProducts: (guildId) => request('GET', `/store/products/${guildId}`),
+  getShopConfig: () => request('GET', '/store/config'),
+  setProductChannel: (guildId, channelId) => request('POST', '/store/admin/product-channel', { guildId, channelId }),
+  getProductChannel: (guildId) => request('GET', `/store/admin/product-channel/${guildId}`),
+  getDirtyProductChannels: () => request('GET', '/store/product-channel-configs'),
+  ackProductChannel: (guildId, messageId) => request('POST', '/store/product-channel/ack', { guildId, messageId }),
 };
 
 module.exports = api;

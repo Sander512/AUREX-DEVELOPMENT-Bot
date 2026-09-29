@@ -26,10 +26,7 @@ const MANAGEMENT_COMMANDS = new Set([
   'welcome-test',
   'verify-panel',
   'rules-send',
-  'product-add',
-  'product-update',
-  'product-delete',
-  'product-list',
+  'product',
 ]);
 
 // Commands staff are explicitly allowed to run.

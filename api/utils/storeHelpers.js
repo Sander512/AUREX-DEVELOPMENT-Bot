@@ -67,6 +67,13 @@ function blobToBuffer(data) {
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
+async function markProductChannelDirty(guildId) {
+  await db.execute({
+    sql: `UPDATE product_channel_config SET dirty = 1 WHERE guild_id = ?`,
+    args: [guildId],
+  });
+}
+
 function formatPrice(cents, currency) {
   return `${(cents / 100).toFixed(2)} ${String(currency).toUpperCase()}`;
 }
@@ -80,5 +87,6 @@ module.exports = {
   filterProductsWithFile,
   getProductFile,
   blobToBuffer,
+  markProductChannelDirty,
   formatPrice,
 };

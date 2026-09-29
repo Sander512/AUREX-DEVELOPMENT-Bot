@@ -118,10 +118,11 @@ start.js      Combined entry point (API + bot in 1 proces — zie hieronder)
 | `/checkverify` | Staff | Toont wie geverifieerd is |
 | `/unverify` | Management | Verwijdert de verificatie-rol van een lid |
 | `/rules-send` | Management | Plaatst/werkt de regels-embed bij |
-| `/product-add` | Management | Voegt een webshop-product toe |
-| `/product-update` | Management | Werkt versie/prijs/changelog bij, optioneel meteen een update-DM |
-| `/product-delete` | Management | Verwijdert een product uit de webshop |
-| `/product-list` | Management | Toont alle webshop-producten |
+| `/product add` | Management | Voegt een webshop-product toe (prijs 0 = gratis, bestand verplicht) |
+| `/product update` | Management | Werkt naam/prijs/bestand/changelog bij, optioneel meteen een update-DM |
+| `/product delete` | Management | Verwijdert een product uit de webshop |
+| `/product list` | Management | Toont alle webshop-producten |
+| `/product kanaal` | Management | Stelt het kanaal in met een automatisch bijgewerkt webshop-overzicht |
 | `/announce` | Management | Stuurt een aankondiging |
 | `/ban` `/kick` `/unban` | Management | Basis moderatie |
 | `/userinfo` | Iedereen | Info over een lid |

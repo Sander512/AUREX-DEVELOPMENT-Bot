@@ -13,6 +13,7 @@ const verifyInteractions = require('./handlers/verifyInteractions');
 const { handleMemberJoin } = require('./utils/welcome');
 const api = require('./utils/api');
 const { startDmQueue } = require('./utils/dmQueue');
+const { startProductChannelSync } = require('./utils/productChannel');
 
 const client = new Client({
   // GuildMembers is a privileged intent — it must also be turned ON for
@@ -59,6 +60,10 @@ client.once('ready', async () => {
   // Webshop: stuurt periodiek klaarstaande DM's (nieuwe productversie,
   // aankoopbevestiging) die de API in de wachtrij heeft gezet.
   startDmQueue(client);
+
+  // Webshop: houdt het via /product kanaal ingestelde overzichtskanaal
+  // per server automatisch up-to-date.
+  startProductChannelSync(client);
 });
 
 // Keeps the dashboard's server list live as the bot is added to / removed

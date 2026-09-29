@@ -23,6 +23,7 @@ const {
   filterProductsWithFile,
   getProductFile,
   blobToBuffer,
+  markProductChannelDirty,
 } = require('../utils/storeHelpers');
 
 const router = express.Router();
@@ -269,6 +270,51 @@ router.get(
   })
 );
 
+// GET /store/my-orders/:guildId — volledige aankoopgeschiedenis van de
+// ingelogde gebruiker (voor het "Mijn aankopen"-scherm), inclusief
+// producten die ondertussen offline/verwijderd zijn — die blijven
+// gewoon downloadbaar voor wie ze gekocht heeft.
+router.get(
+  '/my-orders/:guildId',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const result = await db.execute({
+      sql: `SELECT
+              pu.product_id AS id,
+              pu.amount_cents AS paidCents,
+              pu.currency AS currency,
+              pu.purchased_at AS purchasedAt,
+              p.name AS name,
+              p.version AS version,
+              p.image_urls AS image_urls,
+              p.active AS productActive,
+              (SELECT 1 FROM product_files f WHERE f.product_id = pu.product_id) AS hasFile
+            FROM purchases pu
+            LEFT JOIN products p ON p.id = pu.product_id
+            WHERE pu.guild_id = ? AND pu.discord_id = ? AND pu.status = 'completed'
+            ORDER BY pu.purchased_at DESC`,
+      args: [guildId, req.user.discordId],
+    });
+
+    res.json({
+      orders: result.rows.map((r) => ({
+        id: r.id,
+        name: r.name || 'Verwijderd product',
+        version: r.version || null,
+        imageUrl: parseJsonArray(r.image_urls)[0] || null,
+        paidCents: r.paidCents,
+        currency: r.currency,
+        purchasedAt: r.purchasedAt,
+        hasFile: !!r.hasFile,
+        stillListed: !!r.productActive,
+      })),
+    });
+  })
+);
+
 // ---------------------------------------------------------------------
 // Admin (dashboard) — product-beheer, guild-scoped net als alle andere
 // config-routes: X-API-Key (bot) OF een sessie met "Manage Server" op
@@ -436,6 +482,7 @@ router.post(
       ],
     });
 
+    await markProductChannelDirty(guildId);
     const row = await getProductWithFlag(id);
     res.status(201).json({ product: rowToAdminProduct(row) });
   })
@@ -493,6 +540,7 @@ router.post(
 
     await db.execute({ sql: `UPDATE products SET ${setClauses.join(', ')} WHERE id = ?`, args });
 
+    await markProductChannelDirty(guildId);
     const row = await getProductWithFlag(id);
     res.json({ product: rowToAdminProduct(row) });
   })
@@ -512,6 +560,7 @@ router.delete(
 
     await db.execute({ sql: 'DELETE FROM product_files WHERE product_id = ?', args: [id] });
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [id] });
+    await markProductChannelDirty(guildId);
     res.json({ success: true });
   })
 );
@@ -550,6 +599,75 @@ router.post(
     }
 
     res.json({ queued: buyers.rows.length });
+  })
+);
+
+// ---------------------------------------------------------------------
+// Bot-only — het "webshop-overzicht"-kanaal (/product kanaal)
+// ---------------------------------------------------------------------
+
+// POST /store/admin/product-channel  { guildId, channelId }
+router.post(
+  '/admin/product-channel',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const { guildId, channelId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    if (typeof channelId !== 'string' || !channelId) return res.status(400).json({ error: 'channelId is verplicht' });
+
+    // Nieuw kanaal → oud bericht is niet meer relevant, de bot post een nieuwe.
+    await db.execute({
+      sql: `INSERT INTO product_channel_config (guild_id, channel_id, message_id, dirty, updated_at)
+            VALUES (?, ?, NULL, 1, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id, message_id = NULL, dirty = 1, updated_at = excluded.updated_at`,
+      args: [guildId, channelId, Date.now()],
+    });
+
+    res.json({ success: true });
+  })
+);
+
+// GET /store/admin/product-channel/:guildId — huidige instelling (voor meteen verversen na instellen).
+router.get(
+  '/admin/product-channel/:guildId',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    const r = await db.execute({ sql: 'SELECT * FROM product_channel_config WHERE guild_id = ?', args: [guildId] });
+    const row = r.rows[0];
+    res.json({ config: row ? { guildId, channelId: row.channel_id, messageId: row.message_id } : null });
+  })
+);
+
+// GET /store/product-channel-configs — alle kanalen die (mogelijk) een update nodig hebben.
+// De bot pollt dit periodiek leeg, net als pending-dms.
+router.get(
+  '/product-channel-configs',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const r = await db.execute({ sql: 'SELECT * FROM product_channel_config WHERE dirty = 1' });
+    res.json({
+      configs: r.rows.map((row) => ({ guildId: row.guild_id, channelId: row.channel_id, messageId: row.message_id })),
+    });
+  })
+);
+
+// POST /store/product-channel/ack  { guildId, messageId }
+// De bot meldt hiermee: bericht in dat kanaal staat weer up-to-date.
+router.post(
+  '/product-channel/ack',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const { guildId, messageId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    await db.execute({
+      sql: `UPDATE product_channel_config SET message_id = COALESCE(?, message_id), dirty = 0 WHERE guild_id = ?`,
+      args: [typeof messageId === 'string' ? messageId : null, guildId],
+    });
+
+    res.json({ success: true });
   })
 );
 
