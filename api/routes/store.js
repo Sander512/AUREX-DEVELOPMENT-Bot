@@ -114,6 +114,43 @@ router.get(
   })
 );
 
+// GET /store/top-seller/:guildId — het actieve product met de meeste
+// afgeronde aankopen, voor de "bestseller"-uitlichting op de homepage.
+// Geen verkopen (nieuwe shop)? Dan gewoon het nieuwste actieve product,
+// zodat de homepage nooit leeg hoeft te zijn.
+router.get(
+  '/top-seller/:guildId',
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const bySales = await db.execute({
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, COUNT(pu.id) AS sales
+            FROM products p
+            JOIN purchases pu ON pu.product_id = p.id AND pu.status = 'completed'
+            WHERE p.guild_id = ? AND p.active = 1
+            GROUP BY p.id
+            ORDER BY sales DESC, p.created_at ASC
+            LIMIT 1`,
+      args: [guildId],
+    });
+
+    if (bySales.rows[0]) {
+      const { sales, ...row } = bySales.rows[0];
+      return res.json({ product: rowToPublicProduct(row), sales });
+    }
+
+    const newest = await db.execute({
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file
+            FROM products p WHERE p.guild_id = ? AND p.active = 1
+            ORDER BY p.created_at DESC LIMIT 1`,
+      args: [guildId],
+    });
+
+    res.json({ product: newest.rows[0] ? rowToPublicProduct(newest.rows[0]) : null, sales: 0 });
+  })
+);
+
 // ---------------------------------------------------------------------
 // Ingelogde koper — checkout starten en eigen aankopen inzien
 // ---------------------------------------------------------------------
