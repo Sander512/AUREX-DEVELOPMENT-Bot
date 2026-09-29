@@ -41,7 +41,7 @@ module.exports = {
           opt.setName('prijs').setDescription('Prijs, bv. 19.99 — vul 0 in voor een gratis product').setRequired(true).setMinValue(0)
         )
         .addAttachmentOption((opt) =>
-          opt.setName('bestand').setDescription('Bestand voor kopers. Discord staat hier max ~10-25 MB toe — gebruik voor grotere bestanden het dashboard').setRequired(true)
+          opt.setName('bestand').setDescription('Bestand voor kopers (max ~10 MB, groter? gebruik dashboard)').setRequired(true)
         )
         .addStringOption((opt) => opt.setName('omschrijving').setDescription('Korte omschrijving').setMaxLength(4000))
         .addStringOption((opt) => opt.setName('versie').setDescription('Versienummer, bv. 1.0.0').setMaxLength(100))
