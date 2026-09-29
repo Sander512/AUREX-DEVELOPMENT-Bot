@@ -40,6 +40,12 @@ if (!config.discord.clientId || !config.discord.clientSecret) {
   console.warn(
     '[CONFIG WARNING] DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET ontbreken — "Inloggen met Discord" op het dashboard werkt dan niet.'
   );
+} else {
+  // Handig om te vergelijken met de "Omleidingen" (redirects) in de Discord
+  // Developer Portal (OAuth2-tab) — moet daar EXACT (incl. https://, geen
+  // trailing slash) als redirect-URI geregistreerd staan, anders weigert
+  // Discord de login met "invalid_client"/"redirect_uri mismatch".
+  console.log(`[AUTH] Discord OAuth redirect-URI: ${config.discord.redirectUri || '(niet ingesteld — PUBLIC_URL ontbreekt)'}`);
 }
 
 if (!config.stripe.secretKey || !config.stripe.webhookSecret) {

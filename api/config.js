@@ -4,38 +4,48 @@
 
 require('dotenv').config();
 
+// Env vars copy-pasted from a dashboard (Render, Discord Developer Portal)
+// very easily pick up a trailing space or newline, which is invisible in
+// most UI's but makes the value not match anymore (e.g. DISCORD_CLIENT_SECRET
+// or the redirect URI). Trim everything defensively so that's never the
+// cause of a "Discord weigerde de aanvraag" login failure.
+function env(name) {
+  const v = process.env[name];
+  return typeof v === 'string' ? v.trim() : v;
+}
+
 // Base public URL of the deployed API (e.g. https://jouw-app.onrender.com).
 // Used to build the Discord OAuth redirect URI automatically. Set
 // DISCORD_REDIRECT_URI directly instead if you need something custom.
-const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+const PUBLIC_URL = (env('PUBLIC_URL') || '').replace(/\/+$/, '');
 
 const config = {
   // Shared secret the bot uses to talk to the API — never
   // exposed to the browser.
-  apiKey: process.env.API_KEY,
+  apiKey: env('API_KEY'),
 
   publicUrl: PUBLIC_URL,
 
   session: {
-    secret: process.env.SESSION_SECRET,
+    secret: env('SESSION_SECRET'),
     // How long a dashboard login stays valid before you need to log in
     // with Discord again.
     maxAgeMs: 24 * 60 * 60 * 1000, // 24 hours
   },
 
   discord: {
-    clientId: process.env.DISCORD_CLIENT_ID,
-    clientSecret: process.env.DISCORD_CLIENT_SECRET,
-    redirectUri: process.env.DISCORD_REDIRECT_URI || (PUBLIC_URL ? `${PUBLIC_URL}/auth/discord/callback` : ''),
+    clientId: env('DISCORD_CLIENT_ID'),
+    clientSecret: env('DISCORD_CLIENT_SECRET'),
+    redirectUri: env('DISCORD_REDIRECT_URI') || (PUBLIC_URL ? `${PUBLIC_URL}/auth/discord/callback` : ''),
   },
 
   // Webshop — echte betalingen via Stripe Checkout. Alle drie komen uit
   // je Stripe dashboard (Developers > API keys, en Developers > Webhooks
   // voor de signing secret nadat je het webhook-endpoint hebt aangemaakt).
   stripe: {
-    secretKey: process.env.STRIPE_SECRET_KEY || null,
-    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || null,
-    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
+    secretKey: env('STRIPE_SECRET_KEY') || null,
+    webhookSecret: env('STRIPE_WEBHOOK_SECRET') || null,
+    publishableKey: env('STRIPE_PUBLISHABLE_KEY') || null,
   },
 
   // Zet dit als de shop-pagina (public/shop) LOS van deze API gedeployed
@@ -48,10 +58,10 @@ const config = {
   // Laat leeg als de shop gewoon op hetzelfde domein blijft (/shop).
   // Standaard server voor de shop (zodat de shop-link geen ?guild= nodig
   // heeft) en de Discord-uitnodigingslink voor de "Join Discord"-knop.
-  shopGuildId: process.env.SHOP_GUILD_ID || process.env.DISCORD_GUILD_ID || null,
-  discordInviteUrl: process.env.DISCORD_INVITE_URL || null,
+  shopGuildId: env('SHOP_GUILD_ID') || env('DISCORD_GUILD_ID') || null,
+  discordInviteUrl: env('DISCORD_INVITE_URL') || null,
 
-  shopOrigin: process.env.SHOP_ORIGIN ? process.env.SHOP_ORIGIN.replace(/\/$/, '') : null,
+  shopOrigin: env('SHOP_ORIGIN') ? env('SHOP_ORIGIN').replace(/\/$/, '') : null,
 };
 
 module.exports = config;
