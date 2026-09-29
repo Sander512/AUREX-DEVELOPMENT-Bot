@@ -8,9 +8,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { REST, Routes } = require('discord.js');
 const config = require('./config');
 const logger = require('./utils/logger');
+const { getSetting, setSetting } = require('../api/database');
+
+const SETTINGS_KEY = 'deployed_commands_hash';
 
 function loadCommandDefinitions() {
   const commands = [];
@@ -26,11 +30,39 @@ function loadCommandDefinitions() {
     commands.push(command.data.toJSON());
   }
 
+  // Stabiele volgorde nodig, anders verandert de hash bij elke boot puur
+  // door de willekeurige leesvolgorde van de map, ook als er niets wijzigde.
+  commands.sort((a, b) => a.name.localeCompare(b.name));
+
   return commands;
 }
 
-async function deployCommands() {
+function hashCommands(commands) {
+  return crypto.createHash('sha256').update(JSON.stringify(commands)).digest('hex');
+}
+
+// force=true negeert de opgeslagen hash en pusht altijd (gebruikt door
+// `npm run deploy`, zodat een handmatige run nooit stilletjes niets doet).
+async function deployCommands({ force = false } = {}) {
   const commands = loadCommandDefinitions();
+  const hash = hashCommands(commands);
+
+  if (!force) {
+    let previousHash = null;
+    try {
+      previousHash = await getSetting(SETTINGS_KEY);
+    } catch (err) {
+      // Database nog niet bereikbaar/klaar — dan liever gewoon pushen dan
+      // de boot laten mislukken over een optimalisatie.
+      logger.warn(`Kon vorige command-hash niet ophalen, commands worden voor de zekerheid opnieuw geregistreerd: ${err.message}`);
+    }
+
+    if (previousHash === hash) {
+      logger.info(`Slash commands ongewijzigd (${commands.length}) — registratie bij Discord overgeslagen.`);
+      return null;
+    }
+  }
+
   const rest = new REST().setToken(config.discord.token);
 
   logger.info(`Registreren van ${commands.length} slash commands...`);
@@ -41,13 +73,22 @@ async function deployCommands() {
   );
 
   logger.info(`${data.length} slash commands succesvol geregistreerd.`);
+
+  try {
+    await setSetting(SETTINGS_KEY, hash);
+  } catch (err) {
+    // Niet fataal: in het ergste geval wordt er bij de volgende boot nog
+    // eens (onnodig) gepusht.
+    logger.warn(`Kon command-hash niet opslaan: ${err.message}`);
+  }
+
   return data;
 }
 
 // Only auto-run when executed directly (npm run deploy), not when required
 // as a module from start.js.
 if (require.main === module) {
-  deployCommands().catch((err) => {
+  deployCommands({ force: true }).catch((err) => {
     logger.error('Fout bij registreren van commands:', err);
     process.exit(1);
   });

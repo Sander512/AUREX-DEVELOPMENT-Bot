@@ -30,6 +30,17 @@ if (url.startsWith('file:')) {
 const db = createClient(authToken ? { url, authToken } : { url });
 
 const SCHEMA = `
+-- Kleine key/value-tabel voor interne instellingen die geen eigen tabel
+-- verdienen — bv. onthouden welke slash-commands er al bij Discord
+-- geregistreerd staan, zodat we dat niet op ELKE herstart hoeven te
+-- herhalen (Discord's API rate-limit je sneller dan je denkt als je bij
+-- elke deploy opnieuw alle commands pusht).
+CREATE TABLE IF NOT EXISTS bot_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   action TEXT NOT NULL,
@@ -320,4 +331,17 @@ async function initDb() {
   await db.execute({ sql: ROLE_IDS_BACKFILL, args: [] });
 }
 
-module.exports = { db, initDb };
+async function getSetting(key) {
+  const r = await db.execute({ sql: 'SELECT value FROM bot_settings WHERE key = ?', args: [key] });
+  return r.rows[0]?.value ?? null;
+}
+
+async function setSetting(key, value) {
+  await db.execute({
+    sql: `INSERT INTO bot_settings (key, value, updated_at) VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    args: [key, value, Date.now()],
+  });
+}
+
+module.exports = { db, initDb, getSetting, setSetting };

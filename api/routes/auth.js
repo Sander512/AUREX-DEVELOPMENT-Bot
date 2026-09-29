@@ -109,7 +109,8 @@ router.get(
       tokenData = await oauth.exchangeCode(String(code));
     } catch (err) {
       console.error('[AUTH] Discord token-uitwisseling mislukt:', err.message);
-      return res.redirect(buildRedirectUrl(returnTo, { login_error: 'token_exchange_failed' }));
+      const errorCode = err.rateLimited ? 'rate_limited' : 'token_exchange_failed';
+      return res.redirect(buildRedirectUrl(returnTo, { login_error: errorCode }));
     }
 
     const [discordUser, discordGuilds] = await Promise.all([

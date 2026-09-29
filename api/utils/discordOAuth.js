@@ -31,18 +31,39 @@ async function exchangeCode(code) {
     redirect_uri: config.discord.redirectUri,
   });
 
-  const res = await fetch(`${DISCORD_API}/oauth2/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  // Bij een 429 met "global rate limit" is Discord's hele API voor dit
+  // IP-adres (tijdelijk) op slot — dat is geen probleem in onze eigen
+  // configuratie en gaat vanzelf over. Eén korte herprobeerpoging vangt
+  // een kortstondige piek op; bij een langduriger blokkade (grotere
+  // retry_after) geven we het snel door in plaats van de loginpoging van
+  // de gebruiker minutenlang te laten hangen.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await fetch(`${DISCORD_API}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
 
-  if (!res.ok) {
+    if (res.ok) return res.json();
+
     const text = await res.text().catch(() => '');
-    throw new Error(`Discord token-uitwisseling mislukt (${res.status}): ${text}`);
-  }
+    let retryAfterSeconds = null;
+    try {
+      retryAfterSeconds = JSON.parse(text)?.retry_after ?? null;
+    } catch {
+      // geen JSON-body — negeren
+    }
 
-  return res.json();
+    if (res.status === 429 && attempt === 0 && retryAfterSeconds !== null && retryAfterSeconds <= 3) {
+      await new Promise((resolve) => setTimeout(resolve, retryAfterSeconds * 1000 + 200));
+      continue;
+    }
+
+    const err = new Error(`Discord token-uitwisseling mislukt (${res.status}): ${text}`);
+    err.discordStatus = res.status;
+    err.rateLimited = res.status === 429;
+    throw err;
+  }
 }
 
 async function fetchUser(accessToken) {

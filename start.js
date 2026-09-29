@@ -13,10 +13,11 @@
 // process, Render sees the API's app.listen() as the "web service" while
 // the bot quietly runs alongside it in the background.
 //
-// This entry point ALSO re-registers all slash commands with Discord on
-// every boot, so you never have to manually run `npm run deploy` on hosts
-// (like Render) where you don't have easy shell access — add/rename/remove
-// a command file, push, and the next restart picks it up automatically.
+// This entry point ALSO re-registers slash commands with Discord on boot
+// (only when they've actually changed — see deploy-commands.js), so you
+// never have to manually run `npm run deploy` on hosts (like Render)
+// where you don't have easy shell access — add/rename/remove a command
+// file, push, and the next restart picks it up automatically.
 
 const deployCommands = require('./bot/deploy-commands');
 const config = require('./api/config');
@@ -70,6 +71,11 @@ function startKeepAlive() {
 }
 
 (async () => {
+  // Wacht tot de API echt klaar is (initDb() gedraaid, poort gebonden)
+  // vóórdat we iets doen dat de database nodig heeft (command-hash
+  // opzoeken) of de bot laten inloggen — anders race conditions.
+  await apiReady;
+
   try {
     await deployCommands();
   } catch (err) {
@@ -78,12 +84,6 @@ function startKeepAlive() {
     // registered. Just log it loudly so it's visible in the logs.
     console.error('[START] Slash command registratie mislukt (bot start toch door):', err);
   }
-
-  // Wait until the API has actually finished initDb() and bound to its
-  // port before letting the bot log in — otherwise the bot's 'ready'
-  // handler can fire (and try to sync its guild list to the API) before
-  // the API is listening, which fails with ECONNREFUSED / "fetch failed".
-  await apiReady;
 
   startKeepAlive();
 

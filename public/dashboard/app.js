@@ -56,6 +56,7 @@ function showScreen(name) {
 const LOGIN_ERROR_MESSAGES = {
   invalid_state: 'Inloggen mislukt (verlopen of ongeldige sessie). Probeer het opnieuw.',
   token_exchange_failed: 'Discord heeft de login geweigerd. Probeer het opnieuw.',
+  rate_limited: 'Discord is momenteel tijdelijk overbelast voor deze server. Wacht een paar minuten en probeer het opnieuw.',
   access_denied: 'Je hebt het inloggen geannuleerd.',
 };
 
