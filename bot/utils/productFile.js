@@ -3,11 +3,13 @@
 // verlopen na verloop van tijd, dus we bewaren nooit de link zelf maar het
 // bestand (in de database, via de API).
 
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1 GB — zie ook api/routes/store.js
 
 async function attachmentToUpload(attachment) {
   if (attachment.size > MAX_FILE_BYTES) {
-    throw new Error(`Het bestand is te groot (${(attachment.size / 1024 / 1024).toFixed(1)} MB). Maximaal 8 MB — zip het bestand of maak het kleiner.`);
+    throw new Error(
+      `Het bestand is te groot (${(attachment.size / 1024 / 1024).toFixed(1)} MB, max ${MAX_FILE_BYTES / 1024 / 1024} MB). Gebruik voor grote bestanden het dashboard i.p.v. /product — Discord staat sowieso geen bijlage van deze grootte toe bij een slash command.`
+    );
   }
 
   let response;

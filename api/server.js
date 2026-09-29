@@ -99,7 +99,8 @@ app.post('/store/webhook', express.raw({ type: 'application/json' }), stripeWebh
 // Bestandsupload (base64 in JSON) heeft een grotere limiet nodig dan de rest.
 // Moet VÓÓR de globale express.json() staan; body-parser slaat een al
 // geparste body daarna over.
-app.use('/store/admin/product-file', express.json({ limit: '16mb' }));
+// 1 GB bestand wordt ~1,37 GB als base64 in de JSON-body — ruim marge aanhouden.
+app.use('/store/admin/product-file', express.json({ limit: '1500mb' }));
 
 app.use(express.json({ limit: '100kb' }));
 

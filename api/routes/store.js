@@ -33,7 +33,14 @@ const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretK
 const MAX_PRICE_CENTS = 100_000_000; // €1.000.000 — ruim genoeg, voorkomt kromme invoer
 const MIN_PAID_CENTS = 50; // Stripe weigert betalingen onder 50 cent; 0 = gratis product
 // Discord staat voor bots in DM's ongeveer 10 MB per bericht toe; we houden marge.
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
+// Dit is de opslaglimiet (dashboard-upload en /product add/update via de
+// bot). Let op: dit is NIET de limiet die geldt als de bot het bestand
+// als DM-bijlage probeert te versturen — daar bepaalt Discord zelf een
+// (veel lagere, ~10 MB) grens. Grotere bestanden worden gewoon opgeslagen
+// en blijven via de "Download"-knop op de website beschikbaar; de bot
+// wijkt dan automatisch uit naar alleen een linkje i.p.v. de bijlage
+// (zie bot/utils/dmQueue.js).
+const MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1 GB
 const ALLOWED_CURRENCIES = new Set(['eur', 'usd', 'gbp']);
 
 // ---------------------------------------------------------------------
@@ -732,6 +739,25 @@ router.get(
         fileProductIds: parseJsonArray(r.file_product_ids),
       })),
     });
+  })
+);
+
+// GET /store/product-file-meta/:productId — alleen bestandsnaam/grootte,
+// zonder de (mogelijk enorme) inhoud. De bot gebruikt dit om te bepalen of
+// een bestand nog als DM-bijlage past, zonder eerst het hele bestand in
+// het geheugen te moeten laden (bewust een aparte, lichte query die de
+// BLOB-kolom niet aanraakt — niet getProductFile() hergebruiken).
+router.get(
+  '/product-file-meta/:productId',
+  requireApiKey,
+  asyncHandler(async (req, res) => {
+    const r = await db.execute({
+      sql: 'SELECT file_name, mime_type, size_bytes FROM product_files WHERE product_id = ?',
+      args: [req.params.productId],
+    });
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'Geen bestand voor dit product' });
+    res.json({ fileName: row.file_name, mimeType: row.mime_type, sizeBytes: row.size_bytes });
   })
 );
 

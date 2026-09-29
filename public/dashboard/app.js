@@ -853,7 +853,7 @@ $('addProductBtn').addEventListener('click', async () => {
     return;
   }
   if (!file) return (status.textContent = '❌ Kies eerst een bestand'), (status.style.color = 'var(--danger)');
-  if (file.size > 8 * 1024 * 1024) return (status.textContent = '❌ Bestand is groter dan 8 MB'), (status.style.color = 'var(--danger)');
+  if (file.size > 1024 * 1024 * 1024) return (status.textContent = '❌ Bestand is groter dan 1 GB'), (status.style.color = 'var(--danger)');
 
   btn.disabled = true;
   status.textContent = 'Opslaan...';

@@ -98,6 +98,7 @@ const api = {
   uploadProductFile: (guildId, id, file) =>
     request('POST', `/store/admin/product-file/${id}`, { guildId, ...file }),
   getProductFile: (productId) => request('GET', `/store/product-file/${productId}`),
+  getProductFileMeta: (productId) => request('GET', `/store/product-file-meta/${productId}`),
   notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),
   getPublicProducts: (guildId) => request('GET', `/store/products/${guildId}`),
   getShopConfig: () => request('GET', '/store/config'),

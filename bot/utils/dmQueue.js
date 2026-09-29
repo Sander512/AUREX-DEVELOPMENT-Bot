@@ -12,14 +12,68 @@ const config = require('../config');
 
 const POLL_INTERVAL_MS = 20 * 1000;
 
+// Discord's eigen limiet voor een bijlage in een DM (geen serverboost van
+// toepassing buiten een guild) ligt doorgaans rond de 10 MB voor een
+// gewone bot-account. We houden ruim marge aan: boven deze grens proberen
+// we het niet eens als bijlage — dat zou Discord toch weigeren — en
+// sturen we in plaats daarvan een downloadlink naar de website.
+const SAFE_DM_ATTACHMENT_BYTES = 9 * 1024 * 1024; // 9 MB
+
 // Bouwt de embed rechtstreeks op zodat de titel exact blijft zoals de API hem meegeeft.
-function buildEmbed(dm) {
+function buildEmbed(dm, extraNote) {
+  const description = [dm.embedDescription, extraNote].filter(Boolean).join('\n\n');
   return new EmbedBuilder()
     .setTimestamp()
     .setFooter({ text: `© ${config.brand.name}` })
     .setColor(config.colors.info)
     .setTitle(dm.embedTitle)
-    .setDescription(dm.embedDescription || null);
+    .setDescription(description || null);
+}
+
+let cachedAccountUrl = null;
+async function getAccountUrl() {
+  if (cachedAccountUrl !== undefined && cachedAccountUrl !== null) return cachedAccountUrl;
+  try {
+    const shopCfg = await api.getShopConfig();
+    cachedAccountUrl = shopCfg.shopUrl ? `${shopCfg.shopUrl}/#/account` : null;
+  } catch {
+    cachedAccountUrl = null;
+  }
+  return cachedAccountUrl;
+}
+
+// Haalt voor elk product-id eerst alleen de bestandsgrootte op. Bestanden
+// die als DM-bijlage passen worden volledig opgehaald; te grote bestanden
+// slaan we over (met een linkje naar "Mijn aankopen" i.p.v. de bijlage) —
+// zo laden we nooit onnodig een heel groot bestand in het geheugen.
+async function collectFiles(fileProductIds) {
+  const attachments = [];
+  let skippedCount = 0;
+
+  for (const productId of fileProductIds || []) {
+    let meta;
+    try {
+      meta = await api.getProductFileMeta(productId);
+    } catch (err) {
+      logger.warn(`Kon bestandsgrootte voor product ${productId} niet ophalen: ${err.message}`);
+      continue;
+    }
+
+    if (meta.sizeBytes > SAFE_DM_ATTACHMENT_BYTES) {
+      skippedCount += 1;
+      continue;
+    }
+
+    try {
+      const f = await api.getProductFile(productId);
+      attachments.push(new AttachmentBuilder(Buffer.from(f.dataBase64, 'base64'), { name: f.fileName }));
+    } catch (err) {
+      logger.warn(`Kon bestand voor product ${productId} niet ophalen: ${err.message}`);
+      skippedCount += 1;
+    }
+  }
+
+  return { attachments, skippedCount };
 }
 
 async function processOnce(client) {
@@ -34,18 +88,20 @@ async function processOnce(client) {
   for (const dm of dms) {
     try {
       const user = await client.users.fetch(dm.discordId);
+      const { attachments, skippedCount } = await collectFiles(dm.fileProductIds);
 
-      // Eerst de bestanden ophalen: lukt dat niet, dan sturen we geen
-      // "je bestand volgt"-bericht zonder bestand.
-      const files = [];
-      for (const productId of dm.fileProductIds || []) {
-        const f = await api.getProductFile(productId);
-        files.push(new AttachmentBuilder(Buffer.from(f.dataBase64, 'base64'), { name: f.fileName }));
+      let extraNote = null;
+      if (skippedCount > 0) {
+        const accountUrl = await getAccountUrl();
+        const plural = skippedCount === 1 ? 'bestand is' : `${skippedCount} bestanden zijn`;
+        extraNote = accountUrl
+          ? `📎 ${plural} te groot om als DM te versturen — download het via [Mijn aankopen](${accountUrl}) op de website.`
+          : `📎 ${plural} te groot om als DM te versturen — log in op de website en ga naar "Mijn aankopen" om te downloaden.`;
       }
 
-      await user.send({ embeds: [buildEmbed(dm)] });
-      // Eén bericht per bestand, zodat de 10 MB-limiet van Discord per bericht niet overschreden wordt.
-      for (const file of files) {
+      await user.send({ embeds: [buildEmbed(dm, extraNote)] });
+      // Eén bericht per bestand, zodat de bijlage-limiet van Discord per bericht niet overschreden wordt.
+      for (const file of attachments) {
         await user.send({ files: [file] });
       }
       await api.markDmStatus(dm.id, 'sent');
