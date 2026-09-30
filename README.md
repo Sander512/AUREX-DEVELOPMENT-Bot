@@ -21,6 +21,19 @@ commands als het dashboard.
 - **Dashboard** — login met Discord, kies een server waar je "Manage Server" rechten
   hebt, en stel alles hierboven in met live preview.
 
+## Productfoto's (meerdere foto's, cover, bladeren)
+
+- **Discord:** `/product add` en `/product update` hebben de velden `foto1` t/m `foto8`.
+  `foto1` is de **cover**; de volgorde van de velden is de volgorde in de shop.
+  Foto's bij `/product update` vervangen alle huidige geüploade foto's.
+- **Dashboard → Webshop:** kies meerdere foto's tegelijk (klik een foto om hem de cover te
+  maken). Bij bestaande producten kun je foto's toevoegen, verwijderen of "Maak cover" kiezen.
+- Foto's (PNG/JPG/WEBP/GIF, max 8 per product, max 8 MB per foto) staan in de database en
+  worden via `PUBLIC_URL` uitgeleverd — **`PUBLIC_URL` moet dus ingesteld zijn** (de Vercel-shop
+  laadt de foto's van daar). Oude foto-links blijven werken en komen achter de uploads.
+- **Shop-site:** pijltjes op de hoofdfoto, swipe op mobiel, klik voor een grote weergave met
+  pijltjes / toetsenbord (← → Esc).
+
 ## Webshop instellen (Stripe)
 
 De webshop is een LOS project (map `aurex-shop-site`, bedoeld voor Vercel) en

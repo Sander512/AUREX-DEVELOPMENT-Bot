@@ -740,6 +740,183 @@ function formatPriceAdmin(cents, currency) {
   );
 }
 
+// ---- Productfoto's ----
+const MAX_PHOTOS = 8;
+const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+let newProductPhotos = []; // File[] — index 0 = cover
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1]);
+    r.onerror = () => reject(new Error('Foto lezen mislukt'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function filesToImagePayload(files) {
+  const out = [];
+  for (const f of files) {
+    out.push({ fileName: f.name, mimeType: f.type, dataBase64: await fileToBase64(f) });
+  }
+  return out;
+}
+
+function validatePhotoFiles(files, alreadyThere = 0) {
+  if (alreadyThere + files.length > MAX_PHOTOS) return `Maximaal ${MAX_PHOTOS} foto's per product`;
+  for (const f of files) {
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) return `"${f.name}" is geen PNG, JPG, WEBP of GIF`;
+    if (f.size > MAX_PHOTO_BYTES) return `"${f.name}" is groter dan 8 MB`;
+  }
+  return null;
+}
+
+function renderNewPhotoPreview() {
+  const box = $('sp_photoPreview');
+  box.textContent = '';
+  newProductPhotos.forEach((file, i) => {
+    const item = document.createElement('div');
+    item.className = `photo-item${i === 0 ? ' is-cover' : ''}`;
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name;
+    item.appendChild(img);
+    if (i === 0) {
+      const badge = document.createElement('span');
+      badge.className = 'photo-badge';
+      badge.textContent = 'Cover';
+      item.appendChild(badge);
+    }
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'photo-remove';
+    remove.textContent = '✕';
+    remove.title = 'Verwijderen';
+    remove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      newProductPhotos.splice(i, 1);
+      renderNewPhotoPreview();
+    });
+    item.appendChild(remove);
+    item.title = i === 0 ? 'Cover-foto' : 'Klik om deze foto de cover te maken';
+    item.addEventListener('click', () => {
+      if (i === 0) return;
+      const [f] = newProductPhotos.splice(i, 1);
+      newProductPhotos.unshift(f);
+      renderNewPhotoPreview();
+    });
+    box.appendChild(item);
+  });
+}
+
+$('sp_photos').addEventListener('change', (e) => {
+  const picked = Array.from(e.target.files);
+  e.target.value = ''; // zodat je dezelfde foto later opnieuw kunt kiezen
+  const error = validatePhotoFiles(picked, newProductPhotos.length);
+  if (error) {
+    $('addProductStatus').textContent = `❌ ${error}`;
+    $('addProductStatus').style.color = 'var(--danger)';
+    return;
+  }
+  newProductPhotos = newProductPhotos.concat(picked);
+  renderNewPhotoPreview();
+});
+
+// Fotobeheer per bestaand product: cover kiezen, verwijderen, toevoegen.
+function renderProductPhotos(row, product, reload) {
+  const box = row.querySelector('.product-photos');
+  box.textContent = '';
+  const images = product.images || [];
+
+  images.forEach((img, i) => {
+    const item = document.createElement('div');
+    item.className = `photo-item${i === 0 ? ' is-cover' : ''}`;
+    const el = document.createElement('img');
+    el.src = img.url;
+    el.alt = `${product.name} ${i + 1}`;
+    el.loading = 'lazy';
+    item.appendChild(el);
+    if (i === 0) {
+      const badge = document.createElement('span');
+      badge.className = 'photo-badge';
+      badge.textContent = 'Cover';
+      item.appendChild(badge);
+    } else {
+      const cover = document.createElement('button');
+      cover.type = 'button';
+      cover.className = 'photo-cover-btn';
+      cover.textContent = 'Maak cover';
+      cover.addEventListener('click', async () => {
+        cover.disabled = true;
+        try {
+          await api('POST', `/store/admin/product-images/${product.id}/cover`, { guildId: state.guildId, imageId: img.id });
+          await reload();
+        } catch (err) {
+          alert(`Mislukt: ${err.message}`);
+          cover.disabled = false;
+        }
+      });
+      item.appendChild(cover);
+    }
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'photo-remove';
+    remove.textContent = '✕';
+    remove.title = 'Foto verwijderen';
+    remove.addEventListener('click', async () => {
+      if (!confirm('Deze foto verwijderen?')) return;
+      remove.disabled = true;
+      try {
+        await api('DELETE', `/store/admin/product-images/${product.id}/${img.id}`, { guildId: state.guildId });
+        await reload();
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+        remove.disabled = false;
+      }
+    });
+    item.appendChild(remove);
+    box.appendChild(item);
+  });
+
+  if (images.length < MAX_PHOTOS) {
+    const label = document.createElement('label');
+    label.className = 'photo-add';
+    label.textContent = '+ Foto\'s';
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.multiple = true;
+    input.hidden = true;
+    input.addEventListener('change', async () => {
+      const picked = Array.from(input.files);
+      input.value = '';
+      if (picked.length === 0) return;
+      const error = validatePhotoFiles(picked, images.length);
+      if (error) return alert(error);
+      label.textContent = 'Uploaden...';
+      try {
+        await api('POST', `/store/admin/product-images/${product.id}`, {
+          guildId: state.guildId,
+          images: await filesToImagePayload(picked),
+        });
+        await reload();
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+        label.textContent = '+ Foto\'s';
+      }
+    });
+    label.appendChild(input);
+    box.appendChild(label);
+  }
+
+  if (images.length === 0 && (product.linkImageUrls || []).length > 0) {
+    const note = document.createElement('span');
+    note.className = 'hint';
+    note.textContent = `(${product.linkImageUrls.length} foto-link(s) in gebruik; geüploade foto's komen hier altijd vóór)`;
+    box.appendChild(note);
+  }
+}
+
 function renderProductList(products) {
   const list = $('productList');
 
@@ -757,6 +934,7 @@ function renderProductList(products) {
           p.version ? `<span class="product-version">v${escapeHtml(p.version)}</span>` : ''
         }</div>
         <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}</div>
+        <div class="product-photos photo-strip"></div>
       </div>
       <div class="product-admin-actions">
         <button class="btn btn-ghost btn-small" data-action="toggle">${p.active ? 'Deactiveren' : 'Activeren'}</button>
@@ -771,6 +949,7 @@ function renderProductList(products) {
   list.querySelectorAll('.product-admin-row').forEach((row) => {
     const id = row.dataset.id;
     const product = products.find((p) => p.id === id);
+    renderProductPhotos(row, product, loadShop);
 
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
       e.target.disabled = true;
@@ -855,6 +1034,9 @@ $('addProductBtn').addEventListener('click', async () => {
   if (!file) return (status.textContent = '❌ Kies eerst een bestand'), (status.style.color = 'var(--danger)');
   if (file.size > 1024 * 1024 * 1024) return (status.textContent = '❌ Bestand is groter dan 1 GB'), (status.style.color = 'var(--danger)');
 
+  const photoError = validatePhotoFiles(newProductPhotos);
+  if (photoError) return (status.textContent = `❌ ${photoError}`), (status.style.color = 'var(--danger)');
+
   btn.disabled = true;
   status.textContent = 'Opslaan...';
   status.style.color = 'var(--muted)';
@@ -869,7 +1051,6 @@ $('addProductBtn').addEventListener('click', async () => {
       version: $('sp_version').value.trim() || null,
       changelog: $('sp_changelog').value.trim() || null,
       category: $('sp_category').value.trim() || null,
-      imageUrls: $('sp_images').value.split('\n').map((l) => l.trim()).filter(Boolean),
     });
 
     try {
@@ -891,16 +1072,31 @@ $('addProductBtn').addEventListener('click', async () => {
       throw uploadErr;
     }
 
+    // Foto's (eerste = cover). Mislukt dit, dan blijft het product gewoon staan.
+    let photoError = null;
+    if (newProductPhotos.length > 0) {
+      try {
+        await api('POST', `/store/admin/product-images/${product.id}`, {
+          guildId: state.guildId,
+          images: await filesToImagePayload(newProductPhotos),
+          replace: true,
+        });
+      } catch (err) {
+        photoError = err.message;
+      }
+    }
+
     $('sp_name').value = '';
     $('sp_description').value = '';
     $('sp_price').value = '';
     $('sp_version').value = '';
     $('sp_changelog').value = '';
     $('sp_category').value = '';
-    $('sp_images').value = '';
+    newProductPhotos = [];
+    renderNewPhotoPreview();
     $('sp_file').value = '';
-    status.textContent = '✅ Toegevoegd';
-    status.style.color = 'var(--success)';
+    status.textContent = photoError ? `✅ Toegevoegd, maar foto's mislukten: ${photoError}` : '✅ Toegevoegd';
+    status.style.color = photoError ? 'var(--danger)' : 'var(--success)';
     await loadShop();
   } catch (err) {
     status.textContent = `❌ ${err.message}`;

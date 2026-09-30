@@ -2,10 +2,11 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
 
 module.exports = {
-  data: new SlashCommandBuilder()
+  data: addPhotoOptions(
+    new SlashCommandBuilder()
     .setName('product-add')
     .setDescription('[Management] Voeg een product toe aan de webshop')
     .addStringOption((opt) => opt.setName('naam').setDescription('Productnaam').setRequired(true).setMaxLength(200))
@@ -27,7 +28,8 @@ module.exports = {
         .setName('valuta')
         .setDescription('Standaard: EUR')
         .addChoices({ name: 'EUR', value: 'eur' }, { name: 'USD', value: 'usd' }, { name: 'GBP', value: 'gbp' })
-    ),
+    )
+  ),
 
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -47,6 +49,14 @@ module.exports = {
       upload = await attachmentToUpload(interaction.options.getAttachment('bestand', true));
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Bestand niet gelukt', err.message)] });
+      return;
+    }
+
+    let photos;
+    try {
+      photos = await collectPhotoUploads(interaction);
+    } catch (err) {
+      await interaction.editReply({ embeds: [embeds.error('Foto niet gelukt', err.message)] });
       return;
     }
 
@@ -78,12 +88,23 @@ module.exports = {
       return;
     }
 
+    // Foto's: foto1 = cover. Een mislukte foto-upload draait het product niet terug.
+    let photoNote = '';
+    if (photos.length > 0) {
+      try {
+        await api.uploadProductImages(interaction.guildId, product.id, photos, true);
+        photoNote = `\n**Foto's:** ${photos.length} (foto1 = cover)`;
+      } catch (err) {
+        photoNote = `\n⚠️ Het product staat erin, maar de foto's uploaden mislukte: ${err.message}. Voeg ze toe via \`/product-update\` of het dashboard.`;
+      }
+    }
+
     const priceText = product.priceCents === 0 ? 'Gratis' : `${(product.priceCents / 100).toFixed(2)} ${product.currency.toUpperCase()}`;
     await interaction.editReply({
       embeds: [
         embeds.success(
           'Product toegevoegd',
-          `**${product.name}** staat nu in de webshop.\n**Prijs:** ${priceText}\n**Bestand:** ${upload.fileName}\n\nGebruik \`/product-list\` voor een overzicht of \`/product-update\` om het later bij te werken.`
+          `**${product.name}** staat nu in de webshop.\n**Prijs:** ${priceText}\n**Bestand:** ${upload.fileName}${photoNote}\n\nGebruik \`/product-list\` voor een overzicht of \`/product-update\` om het later bij te werken.`
         ),
       ],
     });

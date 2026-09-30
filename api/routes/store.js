@@ -56,9 +56,28 @@ function parseJsonArray(raw) {
   }
 }
 
+// Geüploade foto's: id's in volgorde (cover eerst), als komma-lijst uit één
+// subquery zodat elke bestaande product-query er simpel bij kan.
+const IMAGE_IDS_SQL = `(SELECT group_concat(id, ',') FROM (SELECT id FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC)) AS image_ids`;
+const MAX_IMAGES = 8;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB per foto
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+function uploadedImages(row) {
+  const ids = row && row.image_ids ? String(row.image_ids).split(',').filter(Boolean) : [];
+  const base = config.publicUrl ? String(config.publicUrl).replace(/\/$/, '') : '';
+  return ids.map((imageId) => ({ id: imageId, url: `${base}/store/product-image/${row.id}/${imageId}` }));
+}
+
+// Alle foto's van een product: eerst de geüploade (eerste = cover), daarna
+// eventuele oude losse links (van vóór foto-uploads bestonden).
+function allImageUrls(row) {
+  return [...uploadedImages(row).map((i) => i.url), ...parseJsonArray(row.image_urls)];
+}
+
 async function getProductWithFlag(id) {
   const r = await db.execute({
-    sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.id = ?`,
+    sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.id = ?`,
     args: [id],
   });
   return r.rows[0] || null;
@@ -75,7 +94,7 @@ function rowToPublicProduct(row) {
     version: row.version || null,
     changelog: row.changelog || '',
     category: row.category || null,
-    imageUrls: parseJsonArray(row.image_urls),
+    imageUrls: allImageUrls(row),
     isFree: row.price_cents === 0,
     hasFile: !!row.has_file,
   };
@@ -84,6 +103,8 @@ function rowToPublicProduct(row) {
 function rowToAdminProduct(row) {
   return {
     ...rowToPublicProduct(row),
+    images: uploadedImages(row),
+    linkImageUrls: parseJsonArray(row.image_urls),
     changelog: row.changelog || '',
     active: !!row.active,
     createdAt: row.created_at,
@@ -113,7 +134,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.guild_id = ? AND p.active = 1 ORDER BY p.created_at ASC`,
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.guild_id = ? AND p.active = 1 ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
@@ -132,7 +153,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const bySales = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, COUNT(pu.id) AS sales
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL}, COUNT(pu.id) AS sales
             FROM products p
             JOIN purchases pu ON pu.product_id = p.id AND pu.status = 'completed'
             WHERE p.guild_id = ? AND p.active = 1
@@ -148,7 +169,7 @@ router.get(
     }
 
     const newest = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL}
             FROM products p WHERE p.guild_id = ? AND p.active = 1
             ORDER BY p.created_at DESC LIMIT 1`,
       args: [guildId],
@@ -334,6 +355,8 @@ router.get(
               p.name AS name,
               p.version AS version,
               p.image_urls AS image_urls,
+              p.id AS id_for_images,
+              ${IMAGE_IDS_SQL},
               p.active AS productActive,
               (SELECT 1 FROM product_files f WHERE f.product_id = pu.product_id) AS hasFile
             FROM purchases pu
@@ -348,7 +371,7 @@ router.get(
         id: r.id,
         name: r.name || 'Verwijderd product',
         version: r.version || null,
-        imageUrl: parseJsonArray(r.image_urls)[0] || null,
+        imageUrl: allImageUrls({ id: r.id_for_images, image_ids: r.image_ids, image_urls: r.image_urls })[0] || null,
         paidCents: r.paidCents,
         currency: r.currency,
         purchasedAt: r.purchasedAt,
@@ -430,6 +453,153 @@ router.get(
   })
 );
 
+// GET /store/product-image/:productId/:imageId — publieke foto (de webshop
+// laat hem cross-origin zien, dus CORP moet op cross-origin staan; helmet
+// zet standaard same-origin, wat de foto's op Vercel zou blokkeren).
+// Het imageId is een willekeurige UUID, dus de URL verandert zodra een foto
+// wordt vervangen — daarom mag hij "immutable" gecachet worden.
+router.get(
+  '/product-image/:productId/:imageId',
+  asyncHandler(async (req, res) => {
+    const { productId, imageId } = req.params;
+    const r = await db.execute({
+      sql: `SELECT i.mime_type, i.data FROM product_images i
+            JOIN products p ON p.id = i.product_id
+            WHERE i.id = ? AND i.product_id = ? AND p.active = 1`,
+      args: [imageId, productId],
+    });
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'Foto niet gevonden' });
+
+    res.setHeader('Content-Type', row.mime_type);
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.send(blobToBuffer(row.data));
+  })
+);
+
+// POST /store/admin/product-images/:id
+//   { guildId, replace?: boolean, images: [{ fileName, mimeType, dataBase64 }] }
+// Voegt foto's toe aan het einde (volgorde = volgorde van de lijst; de eerste
+// foto van een product is de cover). Met replace=true worden eerst alle
+// bestaande geüploade foto's van dit product verwijderd.
+router.post(
+  '/admin/product-images/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { guildId, images, replace } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    const product = await getProductRow(id);
+    if (!product || product.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
+
+    if (!Array.isArray(images) || images.length === 0) {
+      return res.status(400).json({ error: 'Er zijn geen foto\'s meegestuurd.' });
+    }
+
+    const prepared = [];
+    for (const img of images) {
+      const mimeType = img && typeof img.mimeType === 'string' ? img.mimeType.toLowerCase().split(';')[0].trim() : '';
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+        return res.status(400).json({ error: 'Alleen PNG, JPG, WEBP of GIF zijn toegestaan als productfoto.' });
+      }
+      if (typeof img.dataBase64 !== 'string' || img.dataBase64.length === 0) {
+        return res.status(400).json({ error: 'Een van de foto\'s is leeg.' });
+      }
+      const buffer = Buffer.from(img.dataBase64, 'base64');
+      if (buffer.length === 0) return res.status(400).json({ error: 'Een van de foto\'s is leeg.' });
+      if (buffer.length > MAX_IMAGE_BYTES) {
+        return res.status(413).json({ error: `Een foto is te groot (max ${MAX_IMAGE_BYTES / 1024 / 1024} MB per foto).` });
+      }
+      const fileName =
+        typeof img.fileName === 'string' ? img.fileName.trim().replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').slice(0, 200) : null;
+      prepared.push({ fileName, mimeType, buffer });
+    }
+
+    const existing = replace
+      ? 0
+      : (await db.execute({ sql: 'SELECT COUNT(*) AS n FROM product_images WHERE product_id = ?', args: [id] })).rows[0].n;
+    if (Number(existing) + prepared.length > MAX_IMAGES) {
+      return res.status(400).json({ error: `Een product mag maximaal ${MAX_IMAGES} foto's hebben (er staan er al ${existing}).` });
+    }
+
+    if (replace) await db.execute({ sql: 'DELETE FROM product_images WHERE product_id = ?', args: [id] });
+
+    const startPos = replace
+      ? 0
+      : Number((await db.execute({ sql: 'SELECT COALESCE(MAX(position), -1) + 1 AS p FROM product_images WHERE product_id = ?', args: [id] })).rows[0].p);
+
+    const now = Date.now();
+    for (let i = 0; i < prepared.length; i++) {
+      const p = prepared[i];
+      await db.execute({
+        sql: `INSERT INTO product_images (id, product_id, position, file_name, mime_type, size_bytes, data, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [crypto.randomUUID(), id, startPos + i, p.fileName, p.mimeType, p.buffer.length, p.buffer, now + i],
+      });
+    }
+
+    await db.execute({ sql: 'UPDATE products SET updated_at = ? WHERE id = ?', args: [now, id] });
+    await markProductChannelDirty(guildId);
+    const row = await getProductWithFlag(id);
+    res.json({ product: rowToAdminProduct(row) });
+  })
+);
+
+// POST /store/admin/product-images/:id/cover  { guildId, imageId }
+// Zet een foto vooraan (= cover); de rest schuift op met behoud van volgorde.
+router.post(
+  '/admin/product-images/:id/cover',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { guildId, imageId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    const product = await getProductRow(id);
+    if (!product || product.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
+
+    const all = await db.execute({
+      sql: 'SELECT id FROM product_images WHERE product_id = ? ORDER BY position ASC, created_at ASC',
+      args: [id],
+    });
+    const ids = all.rows.map((r) => r.id);
+    if (!ids.includes(imageId)) return res.status(404).json({ error: 'Foto niet gevonden' });
+
+    const ordered = [imageId, ...ids.filter((x) => x !== imageId)];
+    for (let i = 0; i < ordered.length; i++) {
+      await db.execute({ sql: 'UPDATE product_images SET position = ? WHERE id = ?', args: [i, ordered[i]] });
+    }
+
+    await db.execute({ sql: 'UPDATE products SET updated_at = ? WHERE id = ?', args: [Date.now(), id] });
+    await markProductChannelDirty(guildId);
+    const row = await getProductWithFlag(id);
+    res.json({ product: rowToAdminProduct(row) });
+  })
+);
+
+// DELETE /store/admin/product-images/:id/:imageId  { guildId }
+router.delete(
+  '/admin/product-images/:id/:imageId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { id, imageId } = req.params;
+    const { guildId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    const product = await getProductRow(id);
+    if (!product || product.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
+
+    await db.execute({ sql: 'DELETE FROM product_images WHERE id = ? AND product_id = ?', args: [imageId, id] });
+    await db.execute({ sql: 'UPDATE products SET updated_at = ? WHERE id = ?', args: [Date.now(), id] });
+    await markProductChannelDirty(guildId);
+    const row = await getProductWithFlag(id);
+    res.json({ product: rowToAdminProduct(row) });
+  })
+);
+
 // GET /store/admin/products/:guildId — ook inactieve producten, voor het dashboard.
 router.get(
   '/admin/products/:guildId',
@@ -439,7 +609,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file FROM products p WHERE p.guild_id = ? ORDER BY p.created_at ASC`,
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.guild_id = ? ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
@@ -603,6 +773,7 @@ router.delete(
     if (!existing || existing.guild_id !== guildId) return res.status(404).json({ error: 'Product niet gevonden' });
 
     await db.execute({ sql: 'DELETE FROM product_files WHERE product_id = ?', args: [id] });
+    await db.execute({ sql: 'DELETE FROM product_images WHERE product_id = ?', args: [id] });
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [id] });
     await markProductChannelDirty(guildId);
     res.json({ success: true });

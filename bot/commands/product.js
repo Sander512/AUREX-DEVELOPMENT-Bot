@@ -6,7 +6,7 @@
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
 const { refreshGuildNow } = require('../utils/productChannel');
 
 async function findProductByName(guildId, name) {
@@ -33,7 +33,8 @@ module.exports = {
     .setName('product')
     .setDescription('[Management] Beheer de webshop')
     .addSubcommand((sub) =>
-      sub
+      addPhotoOptions(
+        sub
         .setName('add')
         .setDescription('Voeg een product toe aan de webshop')
         .addStringOption((opt) => opt.setName('naam').setDescription('Productnaam').setRequired(true).setMaxLength(200))
@@ -56,9 +57,11 @@ module.exports = {
             .setDescription('Standaard: EUR')
             .addChoices({ name: 'EUR', value: 'eur' }, { name: 'USD', value: 'usd' }, { name: 'GBP', value: 'gbp' })
         )
+      )
     )
     .addSubcommand((sub) =>
-      sub
+      addPhotoOptions(
+        sub
         .setName('update')
         .setDescription('Werk een bestaand product bij')
         .addStringOption((opt) =>
@@ -76,7 +79,9 @@ module.exports = {
         .addBooleanOption((opt) => opt.setName('actief').setDescription('Zichtbaar/kopen in de webshop'))
         .addBooleanOption((opt) =>
           opt.setName('stuur_update').setDescription('Stuur meteen een DM naar iedereen die dit product al heeft gekocht (standaard: nee)')
-        )
+        ),
+        { replace: true }
+      )
     )
     .addSubcommand((sub) =>
       sub
@@ -137,6 +142,14 @@ async function executeAdd(interaction) {
     return;
   }
 
+  let photos;
+  try {
+    photos = await collectPhotoUploads(interaction);
+  } catch (err) {
+    await interaction.editReply({ embeds: [embeds.error('Foto niet gelukt', err.message)] });
+    return;
+  }
+
   let product;
   try {
     ({ product } = await api.addProduct(interaction.guildId, {
@@ -164,6 +177,18 @@ async function executeAdd(interaction) {
     return;
   }
 
+  // Foto's: het product staat er al mét bestand, dus een mislukte foto-upload
+  // is geen reden om alles terug te draaien — wel melden.
+  let photoNote = '';
+  if (photos.length > 0) {
+    try {
+      await api.uploadProductImages(interaction.guildId, product.id, photos, true);
+      photoNote = `\n**Foto's:** ${photos.length} (foto1 = cover)`;
+    } catch (err) {
+      photoNote = `\n⚠️ Het product staat erin, maar de foto's uploaden mislukte: ${err.message}. Voeg ze toe via \`/product update\` of het dashboard.`;
+    }
+  }
+
   refreshGuildNow(interaction.client, interaction.guildId).catch(() => {});
 
   const priceText = product.priceCents === 0 ? 'Gratis' : `${(product.priceCents / 100).toFixed(2)} ${product.currency.toUpperCase()}`;
@@ -171,7 +196,7 @@ async function executeAdd(interaction) {
     embeds: [
       embeds.success(
         'Product toegevoegd',
-        `**${product.name}** staat nu in de webshop.\n**Prijs:** ${priceText}\n**Bestand:** ${upload.fileName}\n\nGebruik \`/product list\` voor een overzicht of \`/product update\` om het later bij te werken.`
+        `**${product.name}** staat nu in de webshop.\n**Prijs:** ${priceText}\n**Bestand:** ${upload.fileName}${photoNote}\n\nGebruik \`/product list\` voor een overzicht of \`/product update\` om het later bij te werken.`
       ),
     ],
   });
@@ -233,7 +258,15 @@ async function executeUpdate(interaction) {
     }
   }
 
-  if (Object.keys(fields).length === 0 && !upload) {
+  let photos;
+  try {
+    photos = await collectPhotoUploads(interaction);
+  } catch (err) {
+    await interaction.editReply({ embeds: [embeds.error('Foto niet gelukt', err.message)] });
+    return;
+  }
+
+  if (Object.keys(fields).length === 0 && !upload && photos.length === 0) {
     await interaction.editReply({ embeds: [embeds.warning('Niets om bij te werken', 'Vul minstens één veld in om te wijzigen.')] });
     return;
   }
@@ -241,6 +274,8 @@ async function executeUpdate(interaction) {
   try {
     if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
     if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
+    // Nieuwe foto's vervangen alle huidige geüploade foto's; foto1 wordt de cover.
+    if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, true);
   } catch (err) {
     await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
     return;

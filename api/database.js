@@ -252,6 +252,20 @@ CREATE TABLE IF NOT EXISTS product_files (
   updated_at INTEGER NOT NULL
 );
 
+-- Geüploade productfoto's. De eerste (laagste position) is de cover. Net als
+-- product_files staat de afbeelding zelf in de database, zodat hij niet
+-- verdwijnt (Discord-CDN-links verlopen na een tijd).
+CREATE TABLE IF NOT EXISTS product_images (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  file_name TEXT,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 -- Eén kanaal per server waar automatisch een overzicht komt te staan van
 -- alle producten die momenteel in de webshop staan (via /product kanaal).
 -- dirty=1 betekent: het aanbod is veranderd sinds de laatste keer dat de
@@ -265,6 +279,7 @@ CREATE TABLE IF NOT EXISTS product_channel_config (
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
+CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id, position);
 CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_pending_dms_status ON pending_dms(status, created_at);

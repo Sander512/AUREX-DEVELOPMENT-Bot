@@ -97,6 +97,8 @@ const api = {
   deleteProduct: (guildId, id) => request('DELETE', `/store/admin/products/${id}`, { guildId }),
   uploadProductFile: (guildId, id, file) =>
     request('POST', `/store/admin/product-file/${id}`, { guildId, ...file }),
+  uploadProductImages: (guildId, id, images, replace = false) =>
+    request('POST', `/store/admin/product-images/${id}`, { guildId, images, replace }),
   getProductFile: (productId) => request('GET', `/store/product-file/${productId}`),
   getProductFileMeta: (productId) => request('GET', `/store/product-file-meta/${productId}`),
   notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),

@@ -2,7 +2,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
 
 async function findProductByName(guildId, name) {
   const { products } = await api.listProducts(guildId);
@@ -10,7 +10,8 @@ async function findProductByName(guildId, name) {
 }
 
 module.exports = {
-  data: new SlashCommandBuilder()
+  data: addPhotoOptions(
+    new SlashCommandBuilder()
     .setName('product-update')
     .setDescription('[Management] Werk een bestaand product bij')
     .addStringOption((opt) =>
@@ -29,6 +30,8 @@ module.exports = {
     .addBooleanOption((opt) =>
       opt.setName('stuur_update').setDescription('Stuur meteen een DM naar iedereen die dit product al heeft gekocht (standaard: nee)')
     ),
+    { replace: true }
+  ),
 
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused();
@@ -100,7 +103,15 @@ module.exports = {
       }
     }
 
-    if (Object.keys(fields).length === 0 && !upload) {
+    let photos;
+    try {
+      photos = await collectPhotoUploads(interaction);
+    } catch (err) {
+      await interaction.editReply({ embeds: [embeds.error('Foto niet gelukt', err.message)] });
+      return;
+    }
+
+    if (Object.keys(fields).length === 0 && !upload && photos.length === 0) {
       await interaction.editReply({ embeds: [embeds.warning('Niets om bij te werken', 'Vul minstens één veld in om te wijzigen.')] });
       return;
     }
@@ -108,6 +119,8 @@ module.exports = {
     try {
       if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
       if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
+      // Nieuwe foto's vervangen alle huidige geüploade foto's; foto1 wordt de cover.
+      if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, true);
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
       return;
