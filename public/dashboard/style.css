@@ -465,3 +465,12 @@ input[type="color"] {
   border: 2px dashed var(--card-border); border-radius: 8px; color: var(--muted); font-size: 12px; cursor: pointer;
 }
 .photo-add:hover { color: #fff; border-color: var(--muted); }
+
+/* ---- Product bewerken, bundels, codes ---- */
+.product-admin-row { flex-wrap: wrap; }
+.product-edit { flex: 1 1 100%; border-top: 1px solid var(--card-border); margin-top: 6px; padding-top: 8px; }
+.product-edit.hidden { display: none; }
+.edit-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.check-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; padding: 8px 10px; background: #0e1119; border: 1px solid var(--card-border); border-radius: 10px; }
+.check-item { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; cursor: pointer; }
+.check-item input { width: auto; margin: 0; }

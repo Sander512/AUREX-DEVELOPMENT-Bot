@@ -567,6 +567,53 @@
         <h2>Producten</h2>
         <div id="productList" class="product-admin-list"></div>
       </div>
+
+      <div class="panel-card">
+        <h2>Bundels</h2>
+        <p class="muted hint">Een bundel is een set producten met een vaste korting. De korting geldt automatisch zodra een klant <strong>alle</strong> producten uit de bundel in de winkelwagen heeft. Bundels staan ook op de shop-pagina.</p>
+        <label>Naam</label>
+        <input id="bd_name" type="text" maxlength="100" placeholder="Bv. Starter Pack" />
+        <label>Omschrijving <span class="hint">optioneel</span></label>
+        <input id="bd_description" type="text" maxlength="500" placeholder="Alles wat je nodig hebt om te starten" />
+        <label>Producten <span class="hint">kies er minstens 2 (gratis producten kunnen niet)</span></label>
+        <div id="bd_products" class="check-list"></div>
+        <label>Korting (%)</label>
+        <input id="bd_percent" type="number" min="1" max="90" step="1" placeholder="20" />
+        <div class="save-bar">
+          <button id="addBundleBtn" class="btn btn-primary">➕ Bundel toevoegen</button>
+          <span id="addBundleStatus" class="save-status"></span>
+        </div>
+        <div id="bundleList" class="product-admin-list"></div>
+      </div>
+
+      <div class="panel-card">
+        <h2>Kortingscodes</h2>
+        <p class="muted hint">Klanten vullen de code in hun winkelwagen in. De korting gaat als Stripe-coupon mee naar de betaalpagina. Elke koper kan een code maar één keer gebruiken. Een code telt pas mee als er echt is betaald.</p>
+        <label>Code <span class="hint">3-30 tekens: letters, cijfers, - en _</span></label>
+        <input id="dc_code" type="text" maxlength="30" placeholder="ZOMER25" />
+        <label>Soort korting</label>
+        <select id="dc_type">
+          <option value="percent">Percentage (%)</option>
+          <option value="amount">Vast bedrag</option>
+        </select>
+        <label id="dc_valueLabel">Korting (%) <span class="hint">100 = volledig gratis</span></label>
+        <input id="dc_value" type="number" min="1" step="0.01" placeholder="25" />
+        <label>Maximaal aantal keer te gebruiken <span class="hint">leeg = onbeperkt</span></label>
+        <input id="dc_maxUses" type="number" min="1" step="1" placeholder="50" />
+        <label>Geldig tot <span class="hint">optioneel</span></label>
+        <input id="dc_expires" type="date" />
+        <div class="save-bar">
+          <button id="addCodeBtn" class="btn btn-primary">➕ Code toevoegen</button>
+          <span id="addCodeStatus" class="save-status"></span>
+        </div>
+        <div id="codeList" class="product-admin-list"></div>
+      </div>
+
+      <div class="panel-card">
+        <h2>Reviews</h2>
+        <p class="muted hint">Alleen kopers kunnen een review schrijven. Je kunt ongepaste reviews hier verwijderen.</p>
+        <div id="reviewAdminList" class="product-admin-list"></div>
+      </div>
     </section>
   </main>
 </div>

@@ -937,10 +937,14 @@ function renderProductList(products) {
         <div class="product-photos photo-strip"></div>
       </div>
       <div class="product-admin-actions">
+        <button class="btn btn-ghost btn-small" data-action="edit">✏️ Bewerken</button>
         <button class="btn btn-ghost btn-small" data-action="toggle">${p.active ? 'Deactiveren' : 'Activeren'}</button>
+        <button class="btn btn-ghost btn-small" data-action="newfile">📦 Nieuw bestand</button>
+        <input type="file" class="newfile-input" hidden />
         <button class="btn btn-ghost btn-small" data-action="notify">🔔 Stuur update</button>
         <button class="btn btn-danger btn-small" data-action="delete">Verwijderen</button>
       </div>
+      <div class="product-edit hidden"></div>
     </div>
   `
     )
@@ -950,6 +954,7 @@ function renderProductList(products) {
     const id = row.dataset.id;
     const product = products.find((p) => p.id === id);
     renderProductPhotos(row, product, loadShop);
+    setupProductEdit(row, product);
 
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
       e.target.disabled = true;
@@ -974,6 +979,46 @@ function renderProductList(products) {
       }
     });
 
+    // Nieuw bestand: vervangt het bestand op de website (kopers downloaden dan
+    // altijd de nieuwste) en stuurt op verzoek meteen een DM met het nieuwe
+    // bestand naar iedereen die het product al gekocht heeft.
+    const newFileInput = row.querySelector('.newfile-input');
+    row.querySelector('[data-action="newfile"]').addEventListener('click', () => newFileInput.click());
+    newFileInput.addEventListener('change', async () => {
+      const file = newFileInput.files[0];
+      newFileInput.value = '';
+      if (!file) return;
+      if (file.size > 1024 * 1024 * 1024) return alert('Bestand is groter dan 1 GB');
+      const btn = row.querySelector('[data-action="newfile"]');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Uploaden...';
+      try {
+        await api('POST', `/store/admin/product-file/${id}`, {
+          guildId: state.guildId,
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          dataBase64: await fileToBase64(file),
+        });
+        const version = prompt(
+          `"${file.name}" staat nu op de website.\n\nNieuw versienummer? (leeg laten = versie niet wijzigen)`,
+          product.version || ''
+        );
+        if (version !== null && version.trim() && version.trim() !== (product.version || '')) {
+          await api('POST', `/store/admin/products/${id}`, { guildId: state.guildId, version: version.trim() });
+        }
+        if (confirm('Nieuw bestand staat online. Ook meteen een update-DM met dit bestand sturen naar iedereen die het gekocht heeft?')) {
+          const result = await api('POST', `/store/admin/products/${id}/notify`, { guildId: state.guildId, includeFile: true });
+          alert(result.message || `DM klaargezet voor ${result.queued} koper(s).`);
+        }
+        await loadShop();
+      } catch (err) {
+        alert(`Mislukt: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+
     row.querySelector('[data-action="notify"]').addEventListener('click', async (e) => {
       if (!confirm(`Iedereen die "${product.name}" heeft gekocht krijgt nu een DM met de huidige versie/changelog. Doorgaan?`)) return;
       e.target.disabled = true;
@@ -992,6 +1037,330 @@ function renderProductList(products) {
   });
 }
 
+// ---- Product bewerken ----
+function setupProductEdit(row, product) {
+  const panel = row.querySelector('.product-edit');
+  const btn = row.querySelector('[data-action="edit"]');
+
+  btn.addEventListener('click', () => {
+    if (!panel.classList.contains('hidden')) {
+      panel.classList.add('hidden');
+      return;
+    }
+    panel.innerHTML = `
+      <label>Naam</label><input data-f="name" type="text" maxlength="200" />
+      <label>Omschrijving</label><textarea data-f="description" rows="3" maxlength="4000"></textarea>
+      <div class="edit-row">
+        <div><label>Prijs <span class="hint">0 = gratis</span></label><input data-f="price" type="number" step="0.01" min="0" /></div>
+        <div><label>Valuta</label><select data-f="currency"><option value="eur">EUR</option><option value="usd">USD</option><option value="gbp">GBP</option></select></div>
+        <div><label>Categorie</label><input data-f="category" type="text" maxlength="60" /></div>
+        <div><label>Versie</label><input data-f="version" type="text" maxlength="100" /></div>
+      </div>
+      <label>Changelog</label><textarea data-f="changelog" rows="3" maxlength="4000"></textarea>
+      <div class="save-bar">
+        <button class="btn btn-primary btn-small" data-f="save">Opslaan</button>
+        <button class="btn btn-ghost btn-small" data-f="cancel">Annuleren</button>
+        <span class="save-status" data-f="status"></span>
+      </div>`;
+    const f = (k) => panel.querySelector(`[data-f="${k}"]`);
+    f('name').value = product.name || '';
+    f('description').value = product.description || '';
+    f('price').value = ((product.priceCents || 0) / 100).toFixed(2);
+    f('currency').value = product.currency || 'eur';
+    f('category').value = product.category || '';
+    f('version').value = product.version || '';
+    f('changelog').value = product.changelog || '';
+    panel.classList.remove('hidden');
+
+    f('cancel').addEventListener('click', () => panel.classList.add('hidden'));
+    f('save').addEventListener('click', async () => {
+      const status = f('status');
+      const price = parseFloat(f('price').value);
+      const name = f('name').value.trim();
+      if (!name) return (status.textContent = '❌ Naam is verplicht'), (status.style.color = 'var(--danger)');
+      if (!Number.isFinite(price) || price < 0) return (status.textContent = '❌ Ongeldige prijs'), (status.style.color = 'var(--danger)');
+
+      f('save').disabled = true;
+      status.textContent = 'Opslaan...';
+      status.style.color = '';
+      try {
+        await api('POST', `/store/admin/products/${product.id}`, {
+          guildId: state.guildId,
+          name,
+          description: f('description').value.trim(),
+          priceCents: Math.round(price * 100),
+          currency: f('currency').value,
+          category: f('category').value.trim(),
+          version: f('version').value.trim() || null,
+          changelog: f('changelog').value.trim() || null,
+        });
+        await loadShop();
+      } catch (err) {
+        status.textContent = `❌ ${err.message}`;
+        status.style.color = 'var(--danger)';
+        f('save').disabled = false;
+      }
+    });
+  });
+}
+
+// ---- Bundels ----
+let adminProducts = [];
+
+function renderBundleProductChoices() {
+  const box = $('bd_products');
+  const keep = new Set(Array.from(box.querySelectorAll('input:checked')).map((i) => i.value));
+  box.textContent = '';
+  const paid = adminProducts.filter((p) => p.priceCents > 0);
+  if (paid.length < 2) {
+    box.appendChild(Object.assign(document.createElement('p'), { className: 'muted hint', textContent: 'Je hebt minstens 2 betaalde producten nodig om een bundel te maken.' }));
+    return;
+  }
+  paid.forEach((p) => {
+    const label = document.createElement('label');
+    label.className = 'check-item';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = p.id;
+    input.checked = keep.has(p.id);
+    label.append(input, ` ${p.name} — ${formatPriceAdmin(p.priceCents, p.currency)}`);
+    box.appendChild(label);
+  });
+}
+
+function renderBundleList(bundles) {
+  const list = $('bundleList');
+  list.textContent = '';
+  if (bundles.length === 0) {
+    list.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nog geen bundels.' }));
+    return;
+  }
+  const nameOf = (id) => (adminProducts.find((p) => p.id === id) || {}).name || '(verwijderd product)';
+  bundles.forEach((b) => {
+    const row = document.createElement('div');
+    row.className = 'product-admin-row';
+    const info = document.createElement('div');
+    info.className = 'product-admin-info';
+    const title = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = b.name;
+    title.append(strong, ` · −${b.discountPercent}%`);
+    if (!b.active) title.append(' ', Object.assign(document.createElement('span'), { className: 'hint', textContent: '(inactief)' }));
+    const sub = document.createElement('div');
+    sub.className = 'muted';
+    sub.style.fontSize = '13px';
+    sub.textContent = b.productIds.map(nameOf).join(' + ');
+    info.append(title, sub);
+
+    const actions = document.createElement('div');
+    actions.className = 'product-admin-actions';
+    const toggle = document.createElement('button');
+    toggle.className = 'btn btn-ghost btn-small';
+    toggle.textContent = b.active ? 'Deactiveren' : 'Activeren';
+    toggle.addEventListener('click', async () => {
+      try { await api('POST', `/store/admin/bundles/${b.id}`, { guildId: state.guildId, active: !b.active }); await loadBundles(); }
+      catch (err) { alert(`Mislukt: ${err.message}`); }
+    });
+    const del = document.createElement('button');
+    del.className = 'btn btn-danger btn-small';
+    del.textContent = 'Verwijderen';
+    del.addEventListener('click', async () => {
+      if (!confirm(`Bundel "${b.name}" verwijderen?`)) return;
+      try { await api('DELETE', `/store/admin/bundles/${b.id}`, { guildId: state.guildId }); await loadBundles(); }
+      catch (err) { alert(`Mislukt: ${err.message}`); }
+    });
+    actions.append(toggle, del);
+    row.append(info, actions);
+    list.appendChild(row);
+  });
+}
+
+async function loadBundles() {
+  renderBundleProductChoices();
+  try {
+    const { bundles } = await api('GET', `/store/admin/bundles/${state.guildId}`);
+    renderBundleList(bundles);
+  } catch (err) {
+    $('bundleList').textContent = `Fout bij laden: ${err.message}`;
+  }
+}
+
+$('addBundleBtn').addEventListener('click', async () => {
+  const status = $('addBundleStatus');
+  const fail = (m) => { status.textContent = `❌ ${m}`; status.style.color = 'var(--danger)'; };
+  const productIds = Array.from($('bd_products').querySelectorAll('input:checked')).map((i) => i.value);
+  const percent = parseInt($('bd_percent').value, 10);
+  if (!$('bd_name').value.trim()) return fail('Geef de bundel een naam');
+  if (productIds.length < 2) return fail('Kies minstens 2 producten');
+  if (!Number.isInteger(percent) || percent < 1 || percent > 90) return fail('Korting moet tussen 1 en 90% liggen');
+
+  $('addBundleBtn').disabled = true;
+  status.textContent = 'Opslaan...';
+  status.style.color = '';
+  try {
+    await api('POST', '/store/admin/bundles', {
+      guildId: state.guildId,
+      name: $('bd_name').value.trim(),
+      description: $('bd_description').value.trim() || null,
+      productIds,
+      discountPercent: percent,
+    });
+    $('bd_name').value = '';
+    $('bd_description').value = '';
+    $('bd_percent').value = '';
+    $('bd_products').querySelectorAll('input').forEach((i) => (i.checked = false));
+    status.textContent = '✅ Toegevoegd';
+    status.style.color = 'var(--success)';
+    await loadBundles();
+  } catch (err) {
+    fail(err.message);
+  } finally {
+    $('addBundleBtn').disabled = false;
+  }
+});
+
+// ---- Kortingscodes ----
+function codeLabel(c) {
+  const value = c.percentOff ? `${c.percentOff}%` : formatPriceAdmin(c.amountOffCents, 'eur');
+  const uses = c.maxUses ? `${c.usedCount}/${c.maxUses} gebruikt` : `${c.usedCount}× gebruikt`;
+  const exp = c.expiresAt ? ` · geldig tot ${new Date(c.expiresAt).toLocaleDateString('nl-NL')}` : '';
+  return `${value} korting · ${uses}${exp}`;
+}
+
+async function loadCodes() {
+  const list = $('codeList');
+  try {
+    const { codes } = await api('GET', `/store/admin/discount-codes/${state.guildId}`);
+    list.textContent = '';
+    if (codes.length === 0) {
+      list.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nog geen kortingscodes.' }));
+      return;
+    }
+    codes.forEach((c) => {
+      const row = document.createElement('div');
+      row.className = 'product-admin-row';
+      const info = document.createElement('div');
+      info.className = 'product-admin-info';
+      const title = document.createElement('div');
+      const strong = document.createElement('strong');
+      strong.textContent = c.code;
+      title.appendChild(strong);
+      const expired = c.expiresAt && c.expiresAt < Date.now();
+      if (!c.active || expired) title.append(' ', Object.assign(document.createElement('span'), { className: 'hint', textContent: expired ? '(verlopen)' : '(inactief)' }));
+      const sub = document.createElement('div');
+      sub.className = 'muted';
+      sub.style.fontSize = '13px';
+      sub.textContent = codeLabel(c);
+      info.append(title, sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'product-admin-actions';
+      const toggle = document.createElement('button');
+      toggle.className = 'btn btn-ghost btn-small';
+      toggle.textContent = c.active ? 'Deactiveren' : 'Activeren';
+      toggle.addEventListener('click', async () => {
+        try { await api('POST', `/store/admin/discount-codes/${c.id}`, { guildId: state.guildId, active: !c.active }); await loadCodes(); }
+        catch (err) { alert(`Mislukt: ${err.message}`); }
+      });
+      const del = document.createElement('button');
+      del.className = 'btn btn-danger btn-small';
+      del.textContent = 'Verwijderen';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Code ${c.code} verwijderen?`)) return;
+        try { await api('DELETE', `/store/admin/discount-codes/${c.id}`, { guildId: state.guildId }); await loadCodes(); }
+        catch (err) { alert(`Mislukt: ${err.message}`); }
+      });
+      actions.append(toggle, del);
+      row.append(info, actions);
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.textContent = `Fout bij laden: ${err.message}`;
+  }
+}
+
+$('dc_type').addEventListener('change', () => {
+  const pct = $('dc_type').value === 'percent';
+  $('dc_valueLabel').innerHTML = pct ? 'Korting (%) <span class="hint">100 = volledig gratis</span>' : 'Korting (bedrag) <span class="hint">bv. 5 voor €5 korting</span>';
+  $('dc_value').placeholder = pct ? '25' : '5.00';
+  $('dc_value').step = pct ? '1' : '0.01';
+});
+
+$('addCodeBtn').addEventListener('click', async () => {
+  const status = $('addCodeStatus');
+  const fail = (m) => { status.textContent = `❌ ${m}`; status.style.color = 'var(--danger)'; };
+  const pct = $('dc_type').value === 'percent';
+  const value = parseFloat($('dc_value').value);
+  if (!$('dc_code').value.trim()) return fail('Vul een code in');
+  if (!Number.isFinite(value) || value <= 0) return fail('Vul een geldige korting in');
+  const maxUsesRaw = $('dc_maxUses').value.trim();
+  const expiresRaw = $('dc_expires').value;
+
+  const payload = { guildId: state.guildId, code: $('dc_code').value.trim() };
+  if (pct) payload.percentOff = Math.round(value);
+  else payload.amountOffCents = Math.round(value * 100);
+  if (maxUsesRaw) payload.maxUses = parseInt(maxUsesRaw, 10);
+  if (expiresRaw) payload.expiresAt = new Date(`${expiresRaw}T23:59:59`).getTime();
+
+  $('addCodeBtn').disabled = true;
+  status.textContent = 'Opslaan...';
+  status.style.color = '';
+  try {
+    await api('POST', '/store/admin/discount-codes', payload);
+    ['dc_code', 'dc_value', 'dc_maxUses', 'dc_expires'].forEach((id) => ($(id).value = ''));
+    status.textContent = '✅ Toegevoegd';
+    status.style.color = 'var(--success)';
+    await loadCodes();
+  } catch (err) {
+    fail(err.message);
+  } finally {
+    $('addCodeBtn').disabled = false;
+  }
+});
+
+// ---- Reviews modereren ----
+async function loadReviews() {
+  const list = $('reviewAdminList');
+  try {
+    const { reviews } = await api('GET', `/store/admin/reviews/${state.guildId}`);
+    list.textContent = '';
+    if (reviews.length === 0) {
+      list.appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Nog geen reviews.' }));
+      return;
+    }
+    reviews.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'product-admin-row';
+      const info = document.createElement('div');
+      info.className = 'product-admin-info';
+      const title = document.createElement('div');
+      const strong = document.createElement('strong');
+      strong.textContent = r.productName || 'Product';
+      title.append(strong, `  ${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)} · ${r.username}`);
+      info.appendChild(title);
+      if (r.body) {
+        const body = document.createElement('div');
+        body.className = 'muted';
+        body.style.fontSize = '13px';
+        body.textContent = r.body;
+        info.appendChild(body);
+      }
+      const del = document.createElement('button');
+      del.className = 'btn btn-danger btn-small';
+      del.textContent = 'Verwijderen';
+      del.addEventListener('click', async () => {
+        if (!confirm('Deze review verwijderen?')) return;
+        try { await api('DELETE', `/store/admin/reviews/${r.id}`, { guildId: state.guildId }); await loadReviews(); }
+        catch (err) { alert(`Mislukt: ${err.message}`); }
+      });
+      row.append(info, del);
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.textContent = `Fout bij laden: ${err.message}`;
+  }
+}
+
 async function loadShop() {
   try {
     const { shopUrl } = await api('GET', '/store/config');
@@ -1003,10 +1372,14 @@ async function loadShop() {
   }
   try {
     const { products } = await api('GET', `/store/admin/products/${state.guildId}`);
+    adminProducts = products;
     renderProductList(products);
   } catch (err) {
     $('productList').innerHTML = `<div class="empty-state">Fout bij laden: ${escapeHtml(err.message)}</div>`;
   }
+  loadBundles();
+  loadCodes();
+  loadReviews();
 }
 
 $('copyShopLinkBtn').addEventListener('click', async () => {

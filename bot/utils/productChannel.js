@@ -18,7 +18,17 @@ function formatPrice(cents, currency) {
   return `${(cents / 100).toFixed(2)} ${String(currency).toUpperCase()}`;
 }
 
-async function buildOverviewEmbed(guildId) {
+const MAX_PRODUCT_EMBEDS = 9; // Discord: max 10 embeds per bericht (1 kop + 9 producten)
+
+function stars(avg, count) {
+  if (!count) return null;
+  const full = Math.round(avg);
+  return `${'★'.repeat(full)}${'☆'.repeat(5 - full)} ${avg.toFixed(1)} (${count})`;
+}
+
+// Eén kop-embed + een kaartje per product (nieuwste eerst) met de cover als
+// miniatuur, prijs, versie en review-score.
+async function buildOverviewEmbeds(guildId) {
   const [{ products }, shopCfg] = await Promise.all([
     api.getPublicProducts(guildId),
     api.getShopConfig().catch(() => ({})),
@@ -26,38 +36,45 @@ async function buildOverviewEmbed(guildId) {
 
   const shopBase = shopCfg.shopUrl ? `${shopCfg.shopUrl}/?guild=${guildId}` : null;
 
-  const embed = new EmbedBuilder()
-    .setTimestamp()
-    .setFooter({ text: `© ${config.brand.name}` })
+  const header = new EmbedBuilder()
     .setColor(config.colors.primary)
-    .setTitle('Webshop — huidig aanbod');
-
-  if (shopBase) embed.setURL(shopBase);
+    .setTitle('Webshop — huidig aanbod')
+    .setFooter({ text: `© ${config.brand.name}` })
+    .setTimestamp();
+  if (shopBase) header.setURL(shopBase);
 
   if (products.length === 0) {
-    embed.setDescription(
+    header.setDescription(
       shopBase ? `Er staan momenteel geen producten in de webshop.\n\n[Naar de webshop](${shopBase})` : 'Er staan momenteel geen producten in de webshop.'
     );
-    return embed;
+    return [header];
   }
 
   const newestFirst = [...products].reverse(); // API geeft oudste eerst
-  const shown = newestFirst.slice(0, MAX_LISTED);
+  const shown = newestFirst.slice(0, MAX_PRODUCT_EMBEDS);
 
-  const lines = shown.map((p) => {
-    const price = formatPrice(p.priceCents, p.currency);
+  let intro = `${products.length} product${products.length === 1 ? '' : 'en'} beschikbaar.`;
+  if (newestFirst.length > shown.length) intro += ` Hieronder de ${shown.length} nieuwste — de rest staat in de webshop.`;
+  if (shopBase) intro += `\n\n[Bekijk de hele webshop](${shopBase}#/shop)`;
+  header.setDescription(intro);
+
+  const cards = shown.map((p) => {
     const link = shopBase ? `${shopBase}#/product/${encodeURIComponent(p.id)}` : null;
-    const name = link ? `[${p.name}](${link})` : p.name;
-    const version = p.version ? ` · v${p.version}` : '';
-    return `• ${name} — ${price}${version}`;
+    const bits = [`**${formatPrice(p.priceCents, p.currency)}**`];
+    if (p.version) bits.push(`v${p.version}`);
+    if (p.category) bits.push(p.category);
+    const rating = stars(p.ratingAvg || 0, p.ratingCount || 0);
+    const lines = [bits.join(' · ')];
+    if (rating) lines.push(rating);
+    if (p.isBestseller) lines.push('🏆 Bestseller');
+
+    const card = new EmbedBuilder().setColor(config.colors.primary).setTitle(p.name.slice(0, 256)).setDescription(lines.join('\n'));
+    if (link) card.setURL(link);
+    if (p.imageUrls && p.imageUrls[0] && /^https?:\/\//.test(p.imageUrls[0])) card.setThumbnail(p.imageUrls[0]);
+    return card;
   });
 
-  let description = lines.join('\n');
-  if (newestFirst.length > shown.length) description += `\n\n*+ ${newestFirst.length - shown.length} meer in de webshop.*`;
-  if (shopBase) description += `\n\n[Bekijk de hele webshop](${shopBase})`;
-
-  embed.setDescription(description);
-  return embed;
+  return [header, ...cards];
 }
 
 async function refreshChannel(client, { guildId, channelId, messageId }) {
@@ -69,9 +86,9 @@ async function refreshChannel(client, { guildId, channelId, messageId }) {
     return;
   }
 
-  let embed;
+  let embeds;
   try {
-    embed = await buildOverviewEmbed(guildId);
+    embeds = await buildOverviewEmbeds(guildId);
   } catch (err) {
     logger.error(`Kon webshop-overzicht voor server ${guildId} niet opbouwen:`, err);
     return;
@@ -88,10 +105,10 @@ async function refreshChannel(client, { guildId, channelId, messageId }) {
 
   try {
     if (message) {
-      await message.edit({ embeds: [embed] });
+      await message.edit({ embeds });
       await api.ackProductChannel(guildId, message.id);
     } else {
-      const sent = await channel.send({ embeds: [embed] });
+      const sent = await channel.send({ embeds });
       await api.ackProductChannel(guildId, sent.id);
     }
   } catch (err) {

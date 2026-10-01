@@ -101,7 +101,8 @@ const api = {
     request('POST', `/store/admin/product-images/${id}`, { guildId, images, replace }),
   getProductFile: (productId) => request('GET', `/store/product-file/${productId}`),
   getProductFileMeta: (productId) => request('GET', `/store/product-file-meta/${productId}`),
-  notifyProduct: (guildId, id) => request('POST', `/store/admin/products/${id}/notify`, { guildId }),
+  notifyProduct: (guildId, id, includeFile = true) =>
+    request('POST', `/store/admin/products/${id}/notify`, { guildId, includeFile }),
   getPublicProducts: (guildId) => request('GET', `/store/products/${guildId}`),
   getShopConfig: () => request('GET', '/store/config'),
   setProductChannel: (guildId, channelId) => request('POST', '/store/admin/product-channel', { guildId, channelId }),

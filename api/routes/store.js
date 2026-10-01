@@ -16,6 +16,8 @@ const config = require('../config');
 const { isDiscordId, isPositiveInteger } = require('../utils/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireApiKey, requireApiKeyOrGuildAccess, requireSession } = require('../middleware/auth');
+const { getSessionUser } = require('../utils/session');
+const { priceCart, getActiveBundles, normalizeCode, parseIds } = require('../utils/pricing');
 const {
   getProductRow,
   hasCompletedPurchase,
@@ -59,9 +61,19 @@ function parseJsonArray(raw) {
 // Geüploade foto's: id's in volgorde (cover eerst), als komma-lijst uit één
 // subquery zodat elke bestaande product-query er simpel bij kan.
 const IMAGE_IDS_SQL = `(SELECT group_concat(id, ',') FROM (SELECT id FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC)) AS image_ids`;
+// Gemiddelde review-score en aantal, ook als subquery zodat elke product-query ze kan meenemen.
+const RATING_SQL = `(SELECT AVG(rating) FROM reviews WHERE product_id = p.id) AS rating_avg, (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) AS rating_count`;
+const PRODUCT_EXTRA_SQL = `${IMAGE_IDS_SQL}, ${RATING_SQL}`;
 const MAX_IMAGES = 8;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB per foto
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+// Regel onderaan bestel-DM's: nodigt kopers uit om een review te schrijven.
+function reviewNudge(guildId) {
+  const base = config.shopOrigin;
+  if (!base) return '';
+  return `\n\n⭐ Tevreden? Laat een review achter via [Mijn aankopen](${base}/?guild=${guildId}#/account).`;
+}
 
 function uploadedImages(row) {
   const ids = row && row.image_ids ? String(row.image_ids).split(',').filter(Boolean) : [];
@@ -77,7 +89,7 @@ function allImageUrls(row) {
 
 async function getProductWithFlag(id) {
   const r = await db.execute({
-    sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.id = ?`,
+    sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${PRODUCT_EXTRA_SQL} FROM products p WHERE p.id = ?`,
     args: [id],
   });
   return r.rows[0] || null;
@@ -95,6 +107,10 @@ function rowToPublicProduct(row) {
     changelog: row.changelog || '',
     category: row.category || null,
     imageUrls: allImageUrls(row),
+    createdAt: row.created_at,
+    ratingAvg: row.rating_avg !== null && row.rating_avg !== undefined ? Math.round(Number(row.rating_avg) * 10) / 10 : null,
+    ratingCount: Number(row.rating_count || 0),
+    isBestseller: !!row.is_bestseller,
     isFree: row.price_cents === 0,
     hasFile: !!row.has_file,
   };
@@ -134,11 +150,21 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.guild_id = ? AND p.active = 1 ORDER BY p.created_at ASC`,
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${PRODUCT_EXTRA_SQL} FROM products p WHERE p.guild_id = ? AND p.active = 1 ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
-    res.json({ products: result.rows.map(rowToPublicProduct) });
+    // Bestseller = het actieve product met de meeste afgeronde aankopen (minstens 1).
+    const top = await db.execute({
+      sql: `SELECT pu.product_id AS id, COUNT(*) AS sales FROM purchases pu
+            JOIN products p ON p.id = pu.product_id
+            WHERE pu.guild_id = ? AND pu.status = 'completed' AND p.active = 1 AND p.price_cents > 0
+            GROUP BY pu.product_id ORDER BY sales DESC, MIN(p.created_at) ASC LIMIT 1`,
+      args: [guildId],
+    });
+    const bestId = top.rows[0] ? top.rows[0].id : null;
+
+    res.json({ products: result.rows.map((row) => rowToPublicProduct({ ...row, is_bestseller: bestId !== null && row.id === bestId })) });
   })
 );
 
@@ -153,7 +179,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const bySales = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL}, COUNT(pu.id) AS sales
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${PRODUCT_EXTRA_SQL}, COUNT(pu.id) AS sales
             FROM products p
             JOIN purchases pu ON pu.product_id = p.id AND pu.status = 'completed'
             WHERE p.guild_id = ? AND p.active = 1
@@ -169,7 +195,7 @@ router.get(
     }
 
     const newest = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL}
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${PRODUCT_EXTRA_SQL}
             FROM products p WHERE p.guild_id = ? AND p.active = 1
             ORDER BY p.created_at DESC LIMIT 1`,
       args: [guildId],
@@ -223,6 +249,15 @@ router.post(
     }
     const guildId = products[0].guild_id;
 
+    // Prijs inclusief bundelkorting en kortingscode: één bron van waarheid
+    // (utils/pricing.js), dezelfde berekening als de "quote" in de winkelwagen.
+    const pricing = await priceCart({ products, guildId, code: body.code, discordId: req.user.discordId });
+    if (typeof body.code === 'string' && body.code.trim() && pricing.codeError) {
+      return res.status(400).json({ error: pricing.codeError });
+    }
+    const priceOf = new Map(pricing.items.map((i) => [i.id, i]));
+    const codeUsed = pricing.code && pricing.codeDiscountCents > 0 ? pricing.code.code : null;
+
     // Gratis producten (prijs 0) gaan niet langs Stripe: direct als afgerond
     // registreren en het bestand per DM laten versturen.
     const freeProducts = products.filter((p) => p.price_cents === 0);
@@ -245,7 +280,7 @@ router.post(
         'Je download',
         `Bedankt voor je bestelling.\n\n**Producten**\n${freeProducts
           .map((p) => `• ${p.version ? `${p.name} (v${p.version})` : p.name}`)
-          .join('\n')}\n\nJe bestand${freeProducts.length === 1 ? ' volgt' : 'en volgen'} direct hieronder in dit gesprek.`,
+          .join('\n')}\n\nJe bestand${freeProducts.length === 1 ? ' volgt' : 'en volgen'} direct hieronder in dit gesprek.${reviewNudge(guildId)}`,
         freeProducts.map((p) => p.id)
       );
       freeClaimed = freeProducts.length;
@@ -254,8 +289,47 @@ router.post(
     if (paidProducts.length === 0) {
       return res.json({ free: true, claimed: freeClaimed });
     }
-    products.length = 0;
-    products.push(...paidProducts);
+
+    const paidTotal = paidProducts.reduce((sum, p) => sum + priceOf.get(p.id).finalCents, 0);
+    const paidDiscount = paidProducts.reduce((sum, p) => {
+      const i = priceOf.get(p.id);
+      return sum + i.bundleDiscountCents + i.codeDiscountCents;
+    }, 0);
+    const discountFor = (p) => {
+      const i = priceOf.get(p.id);
+      return { cents: i.bundleDiscountCents + i.codeDiscountCents, code: i.codeDiscountCents > 0 ? codeUsed : null };
+    };
+
+    // 100% korting: er valt niets te betalen, dus ook niet langs Stripe — direct
+    // afronden zoals een gratis product.
+    if (paidTotal === 0) {
+      const orderId = crypto.randomUUID();
+      const now = Date.now();
+      for (const product of paidProducts) {
+        const d = discountFor(product);
+        await db.execute({
+          sql: `INSERT INTO purchases
+                (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, purchased_at, discount_code, discount_cents)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?, ?, ?)`,
+          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, orderId, product.currency, now, now, d.code, d.cents],
+        });
+      }
+      if (codeUsed) {
+        await db.execute({ sql: 'UPDATE discount_codes SET used_count = used_count + 1 WHERE guild_id = ? AND code = ?', args: [guildId, codeUsed] });
+      }
+      await queuePendingDm(
+        req.user.discordId,
+        'Je download',
+        `Bedankt voor je bestelling.\n\n**Producten**\n${paidProducts
+          .map((p) => `• ${p.version ? `${p.name} (v${p.version})` : p.name}`)
+          .join('\n')}\n\nJe bestand${paidProducts.length === 1 ? ' volgt' : 'en volgen'} direct hieronder in dit gesprek.${reviewNudge(guildId)}`,
+        paidProducts.map((p) => p.id)
+      );
+      return res.json({ free: true, claimed: freeClaimed + paidProducts.length });
+    }
+    if (paidTotal < MIN_PAID_CENTS) {
+      return res.status(400).json({ error: 'Na korting is het totaalbedrag lager dan 0,50 (minimum van de betaalprovider). Haal een product uit je wagen of gebruik een andere code.' });
+    }
 
     if (!config.publicUrl) {
       return res.status(500).json({ error: 'PUBLIC_URL is niet ingesteld op de server — nodig om na afrekenen terug te sturen.' });
@@ -265,13 +339,28 @@ router.post(
     const shopBase = config.shopOrigin || `${config.publicUrl}/shop`;
     const successUrl = `${shopBase}/?guild=${guildId}&success=1`;
     const cancelUrl = `${shopBase}/?guild=${guildId}&canceled=1`;
+    const currency = paidProducts[0].currency;
 
+    // De korting gaat als Stripe-coupon mee (zichtbaar op de betaalpagina en
+    // het bonnetje); de regels zelf blijven op volle prijs.
+    let coupon = null;
     let session;
     try {
+      if (paidDiscount > 0) {
+        const label = codeUsed ? (pricing.bundleDiscountCents > 0 ? `Korting ${codeUsed} + bundel` : `Korting ${codeUsed}`) : 'Bundelkorting';
+        coupon = await stripe.coupons.create({
+          amount_off: paidDiscount,
+          currency,
+          duration: 'once',
+          max_redemptions: 1,
+          name: label.slice(0, 40),
+        });
+      }
+
       session = await stripe.checkout.sessions.create({
         mode: 'payment',
         payment_method_types: ['card'],
-        line_items: products.map((product) => ({
+        line_items: paidProducts.map((product) => ({
           price_data: {
             currency: product.currency,
             product_data: {
@@ -282,22 +371,26 @@ router.post(
           },
           quantity: 1,
         })),
+        ...(coupon ? { discounts: [{ coupon: coupon.id }] } : {}),
         success_url: successUrl,
         cancel_url: cancelUrl,
-        metadata: { orderId, guildId, discordId: req.user.discordId },
+        metadata: { orderId, guildId, discordId: req.user.discordId, discountCode: codeUsed || '' },
       });
     } catch (err) {
+      if (coupon) stripe.coupons.del(coupon.id).catch(() => {});
       return res.status(502).json({ error: `Stripe-fout: ${err.message}` });
     }
 
     // Eén rij per product; stripe_session_id is UNIQUE, dus die staat
     // alleen op de eerste rij — de webhook zoekt via order_id.
-    for (let i = 0; i < products.length; i++) {
-      const product = products[i];
+    // amount_cents = wat er voor dit product écht is betaald (na korting).
+    for (let i = 0; i < paidProducts.length; i++) {
+      const product = paidProducts[i];
+      const d = discountFor(product);
       await db.execute({
         sql: `INSERT INTO purchases
-              (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+              (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, discount_code, discount_cents)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
         args: [
           crypto.randomUUID(),
           product.id,
@@ -306,9 +399,11 @@ router.post(
           req.user.username,
           i === 0 ? session.id : null,
           orderId,
-          product.price_cents,
+          priceOf.get(product.id).finalCents,
           product.currency,
           Date.now(),
+          d.code,
+          d.cents,
         ],
       });
     }
@@ -609,7 +704,7 @@ router.get(
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
 
     const result = await db.execute({
-      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${IMAGE_IDS_SQL} FROM products p WHERE p.guild_id = ? ORDER BY p.created_at ASC`,
+      sql: `SELECT p.*, (SELECT 1 FROM product_files f WHERE f.product_id = p.id) AS has_file, ${PRODUCT_EXTRA_SQL} FROM products p WHERE p.guild_id = ? ORDER BY p.created_at ASC`,
       args: [guildId],
     });
 
@@ -774,13 +869,14 @@ router.delete(
 
     await db.execute({ sql: 'DELETE FROM product_files WHERE product_id = ?', args: [id] });
     await db.execute({ sql: 'DELETE FROM product_images WHERE product_id = ?', args: [id] });
+    await db.execute({ sql: 'DELETE FROM reviews WHERE product_id = ?', args: [id] });
     await db.execute({ sql: 'DELETE FROM products WHERE id = ?', args: [id] });
     await markProductChannelDirty(guildId);
     res.json({ success: true });
   })
 );
 
-// POST /store/admin/products/:id/notify  { guildId }
+// POST /store/admin/products/:id/notify  { guildId, includeFile? }
 // De "Stuur update"-knop: zet voor iedereen die dit product ooit heeft
 // afgerond gekocht een DM klaar met de huidige versie + changelog.
 router.post(
@@ -788,7 +884,7 @@ router.post(
   requireApiKeyOrGuildAccess,
   asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { guildId } = req.body || {};
+    const { guildId, includeFile } = req.body || {};
     if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
 
     const product = await getProductRow(id);
@@ -808,12 +904,439 @@ router.post(
     const changelogLine = product.changelog ? product.changelog : 'Geen changelog opgegeven.';
     const description = `${versionLine}${changelogLine}`;
 
-    const fileIds = await filterProductsWithFile([id]);
+    // includeFile=false: alleen de tekst (versie/changelog), zonder het bestand
+    // opnieuw mee te sturen. Standaard (niet opgegeven) blijft het bestand mee.
+    const fileIds = includeFile === false ? [] : await filterProductsWithFile([id]);
     for (const row of buyers.rows) {
       await queuePendingDm(row.discord_id, title, description, fileIds);
     }
 
     res.json({ queued: buyers.rows.length });
+  })
+);
+
+// ---------------------------------------------------------------------
+// Prijs-quote, bundels, reviews, kortingscodes
+// ---------------------------------------------------------------------
+
+// POST /store/quote  { guildId, productIds, code? } — publiek. Toont wat de
+// winkelwagen na bundelkorting/kortingscode kost. Is de bezoeker ingelogd,
+// dan wordt ook "code al eens gebruikt" meegenomen.
+router.post(
+  '/quote',
+  asyncHandler(async (req, res) => {
+    const { guildId, productIds, code } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    if (!Array.isArray(productIds) || productIds.length > 20) return res.status(400).json({ error: 'Ongeldige winkelwagen' });
+
+    const products = [];
+    for (const id of [...new Set(productIds.filter((x) => typeof x === 'string'))]) {
+      const row = await getProductRow(id);
+      if (row && row.active && row.guild_id === guildId) products.push(row);
+    }
+    const user = getSessionUser(req);
+    const pricing = await priceCart({ products, guildId, code, discordId: user ? user.discordId : null });
+    res.json({ pricing });
+  })
+);
+
+// GET /store/bundles/:guildId — actieve bundels waarvan alle producten nog in de shop staan.
+router.get(
+  '/bundles/:guildId',
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const out = [];
+    for (const b of await getActiveBundles(guildId)) {
+      const items = [];
+      for (const id of b.productIds) {
+        const r = await db.execute({
+          sql: `SELECT p.*, ${IMAGE_IDS_SQL} FROM products p WHERE p.id = ? AND p.guild_id = ? AND p.active = 1`,
+          args: [id, guildId],
+        });
+        if (r.rows[0]) items.push(r.rows[0]);
+      }
+      if (items.length !== b.productIds.length || items.length < 2) continue;
+
+      const original = items.reduce((s, p) => s + Number(p.price_cents), 0);
+      const final = items.reduce((s, p) => s + Math.round((Number(p.price_cents) * (100 - b.discountPercent)) / 100), 0);
+      out.push({
+        id: b.id,
+        name: b.name,
+        description: b.description,
+        discountPercent: b.discountPercent,
+        currency: items[0].currency,
+        originalCents: original,
+        finalCents: final,
+        products: items.map((p) => ({
+          id: p.id,
+          name: p.name,
+          priceCents: Number(p.price_cents),
+          imageUrl: allImageUrls(p)[0] || null,
+        })),
+      });
+    }
+    res.json({ bundles: out });
+  })
+);
+
+// ---- Reviews ----
+
+const MAX_REVIEW_CHARS = 1000;
+
+function rowToReview(r) {
+  return {
+    id: r.id,
+    productId: r.product_id,
+    productName: r.product_name || null,
+    productImage: r.cover_id ? `${config.publicUrl ? String(config.publicUrl).replace(/\/$/, '') : ''}/store/product-image/${r.product_id}/${r.cover_id}` : null,
+    username: r.username || 'Koper',
+    rating: Number(r.rating),
+    body: r.body || '',
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+const REVIEW_SELECT = `SELECT r.*, p.name AS product_name,
+  (SELECT id FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC LIMIT 1) AS cover_id
+  FROM reviews r JOIN products p ON p.id = r.product_id`;
+
+// GET /store/reviews/:guildId?productId=&limit=&offset= — publiek.
+router.get(
+  '/reviews/:guildId',
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const productId = typeof req.query.productId === 'string' && req.query.productId ? req.query.productId : null;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const where = `WHERE r.guild_id = ? AND p.active = 1${productId ? ' AND r.product_id = ?' : ''}`;
+    const args = productId ? [guildId, productId] : [guildId];
+
+    const list = await db.execute({
+      sql: `${REVIEW_SELECT} ${where} ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+      args: [...args, limit, offset],
+    });
+
+    const dist = await db.execute({
+      sql: `SELECT r.rating AS rating, COUNT(*) AS n FROM reviews r JOIN products p ON p.id = r.product_id ${where} GROUP BY r.rating`,
+      args,
+    });
+    const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    let count = 0;
+    let total = 0;
+    for (const row of dist.rows) {
+      distribution[row.rating] = Number(row.n);
+      count += Number(row.n);
+      total += Number(row.rating) * Number(row.n);
+    }
+
+    res.json({
+      reviews: list.rows.map(rowToReview),
+      summary: { count, average: count ? Math.round((total / count) * 10) / 10 : null, distribution },
+    });
+  })
+);
+
+// GET /store/my-reviews/:guildId — mijn eigen reviews (om het formulier in te vullen).
+router.get(
+  '/my-reviews/:guildId',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    const r = await db.execute({
+      sql: 'SELECT product_id, rating, body, updated_at FROM reviews WHERE guild_id = ? AND discord_id = ?',
+      args: [guildId, req.user.discordId],
+    });
+    const reviews = {};
+    for (const row of r.rows) reviews[row.product_id] = { rating: Number(row.rating), body: row.body || '', updatedAt: row.updated_at };
+    res.json({ reviews });
+  })
+);
+
+// POST /store/reviews  { productId, rating, body? } — alleen kopers; opnieuw insturen werkt bij.
+router.post(
+  '/reviews',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { productId, rating, body } = req.body || {};
+    if (typeof productId !== 'string' || !productId) return res.status(400).json({ error: 'productId is verplicht' });
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: 'Geef een score van 1 tot 5 sterren.' });
+    if (body !== undefined && body !== null && (typeof body !== 'string' || body.length > MAX_REVIEW_CHARS)) {
+      return res.status(400).json({ error: `Je review mag maximaal ${MAX_REVIEW_CHARS} tekens zijn.` });
+    }
+
+    const product = await getProductRow(productId);
+    if (!product) return res.status(404).json({ error: 'Product niet gevonden' });
+    if (!(await hasCompletedPurchase(productId, req.user.discordId))) {
+      return res.status(403).json({ error: 'Alleen kopers van dit product kunnen een review schrijven.' });
+    }
+
+    const now = Date.now();
+    const text = typeof body === 'string' ? body.trim() : '';
+    await db.execute({
+      sql: `INSERT INTO reviews (id, product_id, guild_id, discord_id, username, rating, body, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, discord_id) DO UPDATE SET
+              rating = excluded.rating, body = excluded.body, username = excluded.username, updated_at = excluded.updated_at`,
+      args: [crypto.randomUUID(), productId, product.guild_id, req.user.discordId, req.user.username, rating, text || null, now, now],
+    });
+    await markProductChannelDirty(product.guild_id);
+
+    res.json({ success: true, review: { productId, rating, body: text } });
+  })
+);
+
+// DELETE /store/reviews/:productId — eigen review intrekken.
+router.delete(
+  '/reviews/:productId',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { productId } = req.params;
+    const product = await getProductRow(productId);
+    await db.execute({ sql: 'DELETE FROM reviews WHERE product_id = ? AND discord_id = ?', args: [productId, req.user.discordId] });
+    if (product) await markProductChannelDirty(product.guild_id);
+    res.json({ success: true });
+  })
+);
+
+// ---- Beheer: reviews (modereren) ----
+
+// GET /store/admin/reviews/:guildId
+router.get(
+  '/admin/reviews/:guildId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    const r = await db.execute({
+      sql: `${REVIEW_SELECT} WHERE r.guild_id = ? ORDER BY r.created_at DESC LIMIT 200`,
+      args: [guildId],
+    });
+    res.json({ reviews: r.rows.map(rowToReview) });
+  })
+);
+
+// DELETE /store/admin/reviews/:id  { guildId }
+router.delete(
+  '/admin/reviews/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    await db.execute({ sql: 'DELETE FROM reviews WHERE id = ? AND guild_id = ?', args: [req.params.id, guildId] });
+    await markProductChannelDirty(guildId);
+    res.json({ success: true });
+  })
+);
+
+// ---- Beheer: bundels ----
+
+function rowToAdminBundle(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || '',
+    productIds: parseIds(row.product_ids),
+    discountPercent: Number(row.discount_percent),
+    active: !!row.active,
+    createdAt: row.created_at,
+  };
+}
+
+async function validateBundleFields(guildId, fields, { partial }) {
+  const { name, description, productIds, discountPercent } = fields;
+  if (!partial || name !== undefined) {
+    if (typeof name !== 'string' || !name.trim() || name.length > 100) return 'name is verplicht (max 100 tekens)';
+  }
+  if (description !== undefined && description !== null && (typeof description !== 'string' || description.length > 500)) {
+    return 'description mag max 500 tekens zijn';
+  }
+  if (!partial || discountPercent !== undefined) {
+    if (!Number.isInteger(discountPercent) || discountPercent < 1 || discountPercent > 90) return 'Korting moet een geheel percentage zijn tussen 1 en 90';
+  }
+  if (!partial || productIds !== undefined) {
+    if (!Array.isArray(productIds) || new Set(productIds).size !== productIds.length || productIds.length < 2 || productIds.length > 10) {
+      return 'Kies 2 tot 10 verschillende producten voor een bundel';
+    }
+    for (const id of productIds) {
+      const prod = typeof id === 'string' ? await getProductRow(id) : null;
+      if (!prod || prod.guild_id !== guildId) return 'Een gekozen product bestaat niet';
+      if (Number(prod.price_cents) === 0) return `"${prod.name}" is gratis — gratis producten kunnen niet in een bundel`;
+    }
+  }
+  return null;
+}
+
+router.get(
+  '/admin/bundles/:guildId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    const r = await db.execute({ sql: 'SELECT * FROM bundles WHERE guild_id = ? ORDER BY created_at DESC', args: [guildId] });
+    res.json({ bundles: r.rows.map(rowToAdminBundle) });
+  })
+);
+
+router.post(
+  '/admin/bundles',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, ...fields } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    const error = await validateBundleFields(guildId, fields, { partial: false });
+    if (error) return res.status(400).json({ error });
+
+    const id = crypto.randomUUID();
+    await db.execute({
+      sql: `INSERT INTO bundles (id, guild_id, name, description, product_ids, discount_percent, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+      args: [id, guildId, fields.name.trim(), fields.description || null, JSON.stringify(fields.productIds), fields.discountPercent, Date.now()],
+    });
+    const r = await db.execute({ sql: 'SELECT * FROM bundles WHERE id = ?', args: [id] });
+    res.status(201).json({ bundle: rowToAdminBundle(r.rows[0]) });
+  })
+);
+
+router.post(
+  '/admin/bundles/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, ...fields } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    const existing = (await db.execute({ sql: 'SELECT * FROM bundles WHERE id = ? AND guild_id = ?', args: [req.params.id, guildId] })).rows[0];
+    if (!existing) return res.status(404).json({ error: 'Bundel niet gevonden' });
+    if (fields.active !== undefined && typeof fields.active !== 'boolean') return res.status(400).json({ error: 'active moet true/false zijn' });
+    const error = await validateBundleFields(guildId, fields, { partial: true });
+    if (error) return res.status(400).json({ error });
+
+    const sets = [];
+    const args = [];
+    const map = { name: 'name', description: 'description', discountPercent: 'discount_percent', active: 'active', productIds: 'product_ids' };
+    for (const [key, col] of Object.entries(map)) {
+      if (!(key in fields)) continue;
+      let v = fields[key];
+      if (key === 'name') v = v.trim();
+      if (key === 'active') v = v ? 1 : 0;
+      if (key === 'productIds') v = JSON.stringify(v);
+      sets.push(`${col} = ?`);
+      args.push(v);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'Geen geldige velden om te updaten' });
+    args.push(req.params.id);
+    await db.execute({ sql: `UPDATE bundles SET ${sets.join(', ')} WHERE id = ?`, args });
+    const r = await db.execute({ sql: 'SELECT * FROM bundles WHERE id = ?', args: [req.params.id] });
+    res.json({ bundle: rowToAdminBundle(r.rows[0]) });
+  })
+);
+
+router.delete(
+  '/admin/bundles/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    await db.execute({ sql: 'DELETE FROM bundles WHERE id = ? AND guild_id = ?', args: [req.params.id, guildId] });
+    res.json({ success: true });
+  })
+);
+
+// ---- Beheer: kortingscodes ----
+
+function rowToAdminCode(row) {
+  return {
+    id: row.id,
+    code: row.code,
+    percentOff: row.percent_off !== null && row.percent_off !== undefined ? Number(row.percent_off) : null,
+    amountOffCents: row.amount_off_cents !== null && row.amount_off_cents !== undefined ? Number(row.amount_off_cents) : null,
+    maxUses: row.max_uses !== null && row.max_uses !== undefined ? Number(row.max_uses) : null,
+    usedCount: Number(row.used_count || 0),
+    expiresAt: row.expires_at !== null && row.expires_at !== undefined ? Number(row.expires_at) : null,
+    active: !!row.active,
+    createdAt: row.created_at,
+  };
+}
+
+router.get(
+  '/admin/discount-codes/:guildId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+    const r = await db.execute({ sql: 'SELECT * FROM discount_codes WHERE guild_id = ? ORDER BY created_at DESC', args: [guildId] });
+    res.json({ codes: r.rows.map(rowToAdminCode) });
+  })
+);
+
+router.post(
+  '/admin/discount-codes',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, code, percentOff, amountOffCents, maxUses, expiresAt } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+
+    const normalized = normalizeCode(code);
+    if (!/^[A-Z0-9_-]{3,30}$/.test(normalized)) return res.status(400).json({ error: 'Code: 3-30 tekens, alleen letters, cijfers, - en _' });
+
+    const hasPercent = percentOff !== undefined && percentOff !== null;
+    const hasAmount = amountOffCents !== undefined && amountOffCents !== null;
+    if (hasPercent === hasAmount) return res.status(400).json({ error: 'Kies óf een percentage óf een vast bedrag' });
+    if (hasPercent && (!Number.isInteger(percentOff) || percentOff < 1 || percentOff > 100)) {
+      return res.status(400).json({ error: 'Percentage moet een geheel getal zijn tussen 1 en 100' });
+    }
+    if (hasAmount && !isPositiveInteger(amountOffCents, MAX_PRICE_CENTS)) {
+      return res.status(400).json({ error: 'Bedrag moet een positief aantal centen zijn' });
+    }
+    if (hasAmount && amountOffCents === 0) return res.status(400).json({ error: 'Bedrag moet groter dan 0 zijn' });
+    if (maxUses !== undefined && maxUses !== null && (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 1000000)) {
+      return res.status(400).json({ error: 'Maximaal aantal keer gebruiken moet 1 of hoger zijn' });
+    }
+    if (expiresAt !== undefined && expiresAt !== null && (!Number.isInteger(expiresAt) || expiresAt < Date.now())) {
+      return res.status(400).json({ error: 'De verloopdatum moet in de toekomst liggen' });
+    }
+
+    const dupe = await db.execute({ sql: 'SELECT 1 FROM discount_codes WHERE guild_id = ? AND code = ?', args: [guildId, normalized] });
+    if (dupe.rows.length) return res.status(409).json({ error: 'Deze code bestaat al' });
+
+    const id = crypto.randomUUID();
+    await db.execute({
+      sql: `INSERT INTO discount_codes (id, guild_id, code, percent_off, amount_off_cents, max_uses, used_count, expires_at, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1, ?)`,
+      args: [id, guildId, normalized, hasPercent ? percentOff : null, hasAmount ? amountOffCents : null, maxUses ?? null, expiresAt ?? null, Date.now()],
+    });
+    const r = await db.execute({ sql: 'SELECT * FROM discount_codes WHERE id = ?', args: [id] });
+    res.status(201).json({ code: rowToAdminCode(r.rows[0]) });
+  })
+);
+
+router.post(
+  '/admin/discount-codes/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, active } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    if (typeof active !== 'boolean') return res.status(400).json({ error: 'active moet true/false zijn' });
+    await db.execute({ sql: 'UPDATE discount_codes SET active = ? WHERE id = ? AND guild_id = ?', args: [active ? 1 : 0, req.params.id, guildId] });
+    const r = await db.execute({ sql: 'SELECT * FROM discount_codes WHERE id = ? AND guild_id = ?', args: [req.params.id, guildId] });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Code niet gevonden' });
+    res.json({ code: rowToAdminCode(r.rows[0]) });
+  })
+);
+
+router.delete(
+  '/admin/discount-codes/:id',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.body || {};
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid or missing guildId' });
+    await db.execute({ sql: 'DELETE FROM discount_codes WHERE id = ? AND guild_id = ?', args: [req.params.id, guildId] });
+    res.json({ success: true });
   })
 );
 

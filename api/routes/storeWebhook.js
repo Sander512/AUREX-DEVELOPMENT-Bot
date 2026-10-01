@@ -56,12 +56,24 @@ async function markPurchaseCompleted(session) {
     total += row.amount_cents;
   }
 
+  // Kortingscode pas hier als "gebruikt" tellen: de betaling is nu écht rond.
+  const usedCode = session.metadata && session.metadata.discountCode;
+  if (usedCode) {
+    await db.execute({
+      sql: 'UPDATE discount_codes SET used_count = used_count + 1 WHERE guild_id = ? AND code = ?',
+      args: [rows[0].guild_id, usedCode],
+    });
+  }
+
   const fileIds = await filterProductsWithFile(rows.map((r) => r.product_id));
+  const reviewLine = config.shopOrigin
+    ? `\n\n⭐ Tevreden? Laat een review achter via [Mijn aankopen](${config.shopOrigin}/?guild=${rows[0].guild_id}#/account).`
+    : '';
 
   await queuePendingDm(
     rows[0].discord_id,
     'Bestelbevestiging',
-    `Bedankt voor je bestelling. Je betaling van ${formatPrice(total, rows[0].currency)} is ontvangen.\n\n**Producten**\n${names.map((n) => `• ${n}`).join('\n')}\n\nJe bestand${fileIds.length === 1 ? '' : 'en'} ${fileIds.length === 1 ? 'volgt' : 'volgen'} direct hieronder in dit gesprek.`,
+    `Bedankt voor je bestelling. Je betaling van ${formatPrice(total, rows[0].currency)} is ontvangen.\n\n**Producten**\n${names.map((n) => `• ${n}`).join('\n')}\n\nJe bestand${fileIds.length === 1 ? '' : 'en'} ${fileIds.length === 1 ? 'volgt' : 'volgen'} direct hieronder in dit gesprek.${reviewLine}`,
     fileIds
   );
 }

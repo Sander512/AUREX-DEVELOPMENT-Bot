@@ -25,7 +25,8 @@ commands als het dashboard.
 
 - **Discord:** `/product add` en `/product update` hebben de velden `foto1` t/m `foto8`.
   `foto1` is de **cover**; de volgorde van de velden is de volgorde in de shop.
-  Foto's bij `/product update` vervangen alle huidige geüploade foto's.
+  Foto's bij `/product update` worden **achteraan toegevoegd** (de cover blijft); zet
+  `foto_vervangen` op ja om alle huidige foto's door de nieuwe te vervangen.
 - **Dashboard → Webshop:** kies meerdere foto's tegelijk (klik een foto om hem de cover te
   maken). Bij bestaande producten kun je foto's toevoegen, verwijderen of "Maak cover" kiezen.
 - Foto's (PNG/JPG/WEBP/GIF, max 8 per product, max 8 MB per foto) staan in de database en
@@ -33,6 +34,28 @@ commands als het dashboard.
   laadt de foto's van daar). Oude foto-links blijven werken en komen achter de uploads.
 - **Shop-site:** pijltjes op de hoofdfoto, swipe op mobiel, klik voor een grote weergave met
   pijltjes / toetsenbord (← → Esc).
+
+## Reviews, kortingscodes en bundels
+
+- **Reviews:** alleen kopers (afgeronde aankoop) kunnen een review van 1-5 sterren + tekst achterlaten,
+  één per product (opnieuw insturen werkt de review bij). Dat kan op de productpagina en via
+  *Mijn aankopen*; de bestelbevestiging per DM nodigt er ook voor uit. Alle reviews staan op de
+  aparte pagina **Reviews** (`#/reviews`) met filter per product. De gemiddelde score staat op de
+  productkaarten, productpagina en in het Discord-overzichtskanaal. Het Discord-account wordt als
+  naam getoond. Ongepaste reviews verwijder je in het dashboard (Webshop → Reviews).
+- **Kortingscodes** (dashboard → Webshop → Kortingscodes): percentage of vast bedrag, optioneel
+  maximaal aantal keer en einddatum. Elke koper kan een code één keer gebruiken; een code telt pas
+  mee zodra er echt betaald is. 100% korting rekent zonder Stripe af.
+- **Bundels** (dashboard → Webshop → Bundels): 2-10 betaalde producten met een vaste korting. De
+  korting geldt automatisch als alle producten in de winkelwagen zitten en kan gestapeld worden met
+  een kortingscode. Bundels staan op de home- en shop-pagina.
+- De korting gaat als **Stripe-coupon** mee naar de betaalpagina (regels blijven op volle prijs).
+  De server rekent altijd zelf (`api/utils/pricing.js`); de browser toont alleen de uitkomst.
+- Na korting moet het totaal minimaal 0,50 zijn (minimum van Stripe), of precies 0 (gratis).
+- Labels op de kaarten: **Nieuw** (jonger dan 14 dagen), **Gratis**, **Bestseller** (meeste verkopen).
+  Met de muis over een kaart zie je de tweede foto.
+- Nieuwe tabellen (`reviews`, `bundles`, `discount_codes`) en kolommen worden bij het starten
+  automatisch aangemaakt; er hoeft niets handmatig te gebeuren.
 
 ## Webshop instellen (Stripe)
 

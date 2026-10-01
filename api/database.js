@@ -266,6 +266,50 @@ CREATE TABLE IF NOT EXISTS product_images (
   created_at INTEGER NOT NULL
 );
 
+-- Reviews: alleen kopers (afgeronde aankoop) mogen er één per product
+-- achterlaten; opnieuw insturen werkt de bestaande review bij.
+CREATE TABLE IF NOT EXISTS reviews (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  discord_id TEXT NOT NULL,
+  username TEXT,
+  rating INTEGER NOT NULL,
+  body TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (product_id, discord_id)
+);
+
+-- Bundels: een vaste set producten met een percentage korting. De korting
+-- geldt automatisch zodra ALLE producten uit de bundel in de winkelwagen zitten.
+CREATE TABLE IF NOT EXISTS bundles (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  product_ids TEXT NOT NULL,
+  discount_percent INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+
+-- Kortingscodes: percentage of vast bedrag. used_count wordt pas verhoogd
+-- als de betaling echt is afgerond (webhook), niet bij het starten van afrekenen.
+CREATE TABLE IF NOT EXISTS discount_codes (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  code TEXT NOT NULL,
+  percent_off INTEGER,
+  amount_off_cents INTEGER,
+  max_uses INTEGER,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  UNIQUE (guild_id, code)
+);
+
 -- Eén kanaal per server waar automatisch een overzicht komt te staan van
 -- alle producten die momenteel in de webshop staan (via /product kanaal).
 -- dirty=1 betekent: het aanbod is veranderd sinds de laatste keer dat de
@@ -280,6 +324,9 @@ CREATE TABLE IF NOT EXISTS product_channel_config (
 
 CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id, position);
+CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reviews_guild ON reviews(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_bundles_guild ON bundles(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_pending_dms_status ON pending_dms(status, created_at);
@@ -316,6 +363,9 @@ const MIGRATIONS = [
   `ALTER TABLE products ADD COLUMN image_urls TEXT`,
   // Welke product-bestanden er bij een DM meegestuurd moeten worden (JSON-array van product-id's).
   `ALTER TABLE pending_dms ADD COLUMN file_product_ids TEXT`,
+  // Kortingen: welke code er bij een aankoop gebruikt is en hoeveel korting dit product kreeg.
+  `ALTER TABLE purchases ADD COLUMN discount_code TEXT`,
+  `ALTER TABLE purchases ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0`,
 ];
 
 // One-time data migration: existing rows only have the old single

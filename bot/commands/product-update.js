@@ -28,9 +28,11 @@ module.exports = {
     )
     .addBooleanOption((opt) => opt.setName('actief').setDescription('Zichtbaar/kopen in de webshop'))
     .addBooleanOption((opt) =>
-      opt.setName('stuur_update').setDescription('Stuur meteen een DM naar iedereen die dit product al heeft gekocht (standaard: nee)')
+      opt.setName('stuur_update').setDescription('DM naar alle kopers, mét het nieuwe bestand als je bestand meestuurt (standaard: nee)')
     ),
     { replace: true }
+  ).addBooleanOption((opt) =>
+    opt.setName('foto_vervangen').setDescription('Vervang ALLE huidige foto\'s door de nieuwe (standaard: nee = toevoegen)')
   ),
 
   async autocomplete(interaction) {
@@ -103,6 +105,7 @@ module.exports = {
       }
     }
 
+    const replacePhotos = interaction.options.getBoolean('foto_vervangen') || false;
     let photos;
     try {
       photos = await collectPhotoUploads(interaction);
@@ -119,8 +122,9 @@ module.exports = {
     try {
       if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
       if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
-      // Nieuwe foto's vervangen alle huidige geüploade foto's; foto1 wordt de cover.
-      if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, true);
+      // Standaard worden nieuwe foto's achteraan toegevoegd (cover blijft). Met
+      // foto_vervangen=true gaan alle huidige foto's weg en wordt foto1 de cover.
+      if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, replacePhotos);
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
       return;
@@ -129,8 +133,11 @@ module.exports = {
     let notifyNote = '';
     if (stuurUpdate) {
       try {
-        const result = await api.notifyProduct(interaction.guildId, product.id);
+        const result = await api.notifyProduct(interaction.guildId, product.id, !!upload);
         notifyNote = `\n\n🔔 ${result.message || `DM klaargezet voor ${result.queued} koper(s).`}`;
+          if (!upload && result.queued > 0) {
+            notifyNote += '\nℹ️ Je hebt geen nieuw bestand meegestuurd, dus kopers kregen alleen de tekst (versie/changelog). Voeg `bestand` toe om ook de nieuwe versie mee te sturen.';
+          }
       } catch (err) {
         notifyNote = `\n\n⚠️ Product is bijgewerkt, maar de update-DM versturen mislukte: ${err.message}`;
       }

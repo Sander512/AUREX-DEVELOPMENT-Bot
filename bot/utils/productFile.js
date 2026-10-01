@@ -42,9 +42,11 @@ function addPhotoOptions(builder, { replace = false } = {}) {
     const description =
       i === 1
         ? replace
-          ? 'Cover-foto (foto1 = hoofdfoto). Foto\'s hier vervangen ALLE huidige foto\'s'
+          ? 'Nieuwe foto (wordt achteraan toegevoegd; max 8 totaal)'
           : 'Cover-foto (foto1 = hoofdfoto, PNG/JPG/WEBP/GIF)'
-        : `Foto ${i} — volgorde van de velden = volgorde in de shop`;
+        : replace
+          ? `Nieuwe foto ${i} (wordt achteraan toegevoegd)`
+          : `Foto ${i} — volgorde van de velden = volgorde in de shop`;
     builder.addAttachmentOption((opt) => opt.setName(`foto${i}`).setDescription(description));
   }
   return builder;
