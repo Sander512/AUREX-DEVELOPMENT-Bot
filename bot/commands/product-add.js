@@ -2,7 +2,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads, uploadPhotosBatched } = require('../utils/productFile');
 
 module.exports = {
   data: addPhotoOptions(
@@ -92,7 +92,7 @@ module.exports = {
     let photoNote = '';
     if (photos.length > 0) {
       try {
-        await api.uploadProductImages(interaction.guildId, product.id, photos, true);
+        await uploadPhotosBatched(interaction.guildId, product.id, photos, true);
         photoNote = `\n**Foto's:** ${photos.length} (foto1 = cover)`;
       } catch (err) {
         photoNote = `\n⚠️ Het product staat erin, maar de foto's uploaden mislukte: ${err.message}. Voeg ze toe via \`/product-update\` of het dashboard.`;

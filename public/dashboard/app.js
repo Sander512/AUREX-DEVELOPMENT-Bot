@@ -741,7 +741,7 @@ function formatPriceAdmin(cents, currency) {
 }
 
 // ---- Productfoto's ----
-const MAX_PHOTOS = 8;
+const MAX_PHOTOS = 15;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 let newProductPhotos = []; // File[] — index 0 = cover
 
@@ -760,6 +760,32 @@ async function filesToImagePayload(files) {
     out.push({ fileName: f.name, mimeType: f.type, dataBase64: await fileToBase64(f) });
   }
   return out;
+}
+
+// Foto's in porties van max ~30 MB naar de server (15 grote foto's in één request
+// zijn te zwaar). Bij replace=true vervangt de eerste portie alles; de rest komt erachter.
+async function uploadPhotoFiles(productId, files, replace) {
+  const MAX_BATCH_BYTES = 30 * 1024 * 1024;
+  let batch = [];
+  let bytes = 0;
+  let first = true;
+  const flush = async () => {
+    if (batch.length === 0) return;
+    await api('POST', `/store/admin/product-images/${productId}`, {
+      guildId: state.guildId,
+      images: batch,
+      replace: !!replace && first,
+    });
+    first = false;
+    batch = [];
+    bytes = 0;
+  };
+  for (const f of files) {
+    if (batch.length > 0 && bytes + f.size > MAX_BATCH_BYTES) await flush();
+    batch.push(...(await filesToImagePayload([f])));
+    bytes += f.size;
+  }
+  await flush();
 }
 
 function validatePhotoFiles(files, alreadyThere = 0) {
@@ -895,10 +921,7 @@ function renderProductPhotos(row, product, reload) {
       if (error) return alert(error);
       label.textContent = 'Uploaden...';
       try {
-        await api('POST', `/store/admin/product-images/${product.id}`, {
-          guildId: state.guildId,
-          images: await filesToImagePayload(picked),
-        });
+        await uploadPhotoFiles(product.id, picked, false);
         await reload();
       } catch (err) {
         alert(`Mislukt: ${err.message}`);
@@ -1449,11 +1472,7 @@ $('addProductBtn').addEventListener('click', async () => {
     let photoError = null;
     if (newProductPhotos.length > 0) {
       try {
-        await api('POST', `/store/admin/product-images/${product.id}`, {
-          guildId: state.guildId,
-          images: await filesToImagePayload(newProductPhotos),
-          replace: true,
-        });
+        await uploadPhotoFiles(product.id, newProductPhotos, true);
       } catch (err) {
         photoError = err.message;
       }

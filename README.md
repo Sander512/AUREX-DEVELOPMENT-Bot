@@ -23,13 +23,13 @@ commands als het dashboard.
 
 ## Productfoto's (meerdere foto's, cover, bladeren)
 
-- **Discord:** `/product add` en `/product update` hebben de velden `foto1` t/m `foto8`.
+- **Discord:** `/product add`, `/product update` en `/product fotos` hebben de velden `foto1` t/m `foto15`.
   `foto1` is de **cover**; de volgorde van de velden is de volgorde in de shop.
-  Foto's bij `/product update` worden **achteraan toegevoegd** (de cover blijft); zet
-  `foto_vervangen` op ja om alle huidige foto's door de nieuwe te vervangen.
+  Foto's bij `/product update` worden **achteraan toegevoegd** (de cover blijft). Alle foto's
+  vervangen kan met `/product fotos` (foto1 wordt de nieuwe cover).
 - **Dashboard → Webshop:** kies meerdere foto's tegelijk (klik een foto om hem de cover te
   maken). Bij bestaande producten kun je foto's toevoegen, verwijderen of "Maak cover" kiezen.
-- Foto's (PNG/JPG/WEBP/GIF, max 8 per product, max 8 MB per foto) staan in de database en
+- Foto's (PNG/JPG/WEBP/GIF, max 15 per product, max 8 MB per foto) staan in de database en
   worden via `PUBLIC_URL` uitgeleverd — **`PUBLIC_URL` moet dus ingesteld zijn** (de Vercel-shop
   laadt de foto's van daar). Oude foto-links blijven werken en komen achter de uploads.
 - **Shop-site:** pijltjes op de hoofdfoto, swipe op mobiel, klik voor een grote weergave met

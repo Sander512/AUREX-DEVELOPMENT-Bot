@@ -101,7 +101,8 @@ app.post('/store/webhook', express.raw({ type: 'application/json' }), stripeWebh
 // geparste body daarna over.
 // 1 GB bestand wordt ~1,37 GB als base64 in de JSON-body — ruim marge aanhouden.
 app.use('/store/admin/product-file', express.json({ limit: '1500mb' }));
-// Productfoto's (base64 in JSON): max 8 foto's van elk max 8 MB.
+// Productfoto's (base64 in JSON): bot en dashboard sturen ze in porties van
+// max ~40 MB per request, dus 90 MB is ruim genoeg (max 15 foto's van elk max 8 MB).
 app.use('/store/admin/product-images', express.json({ limit: '90mb' }));
 
 app.use(express.json({ limit: '100kb' }));

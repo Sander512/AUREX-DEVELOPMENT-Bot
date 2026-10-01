@@ -6,7 +6,7 @@
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads, uploadPhotosBatched } = require('../utils/productFile');
 const { refreshGuildNow } = require('../utils/productChannel');
 
 async function findProductByName(guildId, name) {
@@ -80,9 +80,18 @@ module.exports = {
         .addBooleanOption((opt) =>
           opt.setName('stuur_update').setDescription('DM naar alle kopers, mét het nieuwe bestand als je bestand meestuurt (standaard: nee)')
         ),
-        { replace: true }
-      ).addBooleanOption((opt) =>
-        opt.setName('foto_vervangen').setDescription('Vervang ALLE huidige foto\'s door de nieuwe (standaard: nee = toevoegen)')
+        { mode: 'append' }
+      )
+    )
+    .addSubcommand((sub) =>
+      addPhotoOptions(
+        sub
+          .setName('fotos')
+          .setDescription("Vervang ALLE foto's van een product (foto1 = cover)")
+          .addStringOption((opt) =>
+            opt.setName('naam').setDescription('Product waarvan je de foto\'s vervangt').setRequired(true).setAutocomplete(true)
+          ),
+        { mode: 'replace' }
       )
     )
     .addSubcommand((sub) =>
@@ -109,7 +118,7 @@ module.exports = {
 
   async autocomplete(interaction) {
     const sub = interaction.options.getSubcommand();
-    if (sub === 'update' || sub === 'delete') return autocompleteProductName(interaction);
+    if (sub === 'update' || sub === 'delete' || sub === 'fotos') return autocompleteProductName(interaction);
     await interaction.respond([]);
   },
 
@@ -117,6 +126,7 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
     if (sub === 'add') return executeAdd(interaction);
     if (sub === 'update') return executeUpdate(interaction);
+    if (sub === 'fotos') return executeFotos(interaction);
     if (sub === 'delete') return executeDelete(interaction);
     if (sub === 'list') return executeList(interaction);
     if (sub === 'kanaal') return executeKanaal(interaction);
@@ -184,7 +194,7 @@ async function executeAdd(interaction) {
   let photoNote = '';
   if (photos.length > 0) {
     try {
-      await api.uploadProductImages(interaction.guildId, product.id, photos, true);
+      await uploadPhotosBatched(interaction.guildId, product.id, photos, true);
       photoNote = `\n**Foto's:** ${photos.length} (foto1 = cover)`;
     } catch (err) {
       photoNote = `\n⚠️ Het product staat erin, maar de foto's uploaden mislukte: ${err.message}. Voeg ze toe via \`/product update\` of het dashboard.`;
@@ -260,7 +270,6 @@ async function executeUpdate(interaction) {
     }
   }
 
-  const replacePhotos = interaction.options.getBoolean('foto_vervangen') || false;
   let photos;
   try {
     photos = await collectPhotoUploads(interaction);
@@ -277,9 +286,8 @@ async function executeUpdate(interaction) {
   try {
     if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
     if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
-    // Standaard worden nieuwe foto's achteraan toegevoegd (cover blijft). Met
-    // foto_vervangen=true gaan alle huidige foto's weg en wordt foto1 de cover.
-    if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, replacePhotos);
+    // Nieuwe foto's worden achteraan toegevoegd (de cover blijft). Alles vervangen kan met /product fotos.
+    if (photos.length > 0) await uploadPhotosBatched(interaction.guildId, product.id, photos, false);
   } catch (err) {
     await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
     return;
@@ -302,6 +310,40 @@ async function executeUpdate(interaction) {
 
   await interaction.editReply({
     embeds: [embeds.success('Product bijgewerkt', `**${product.name}** is bijgewerkt.${notifyNote}`)],
+  });
+}
+
+async function executeFotos(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const product = await findProductByName(interaction.guildId, interaction.options.getString('naam', true));
+  if (!product) {
+    await interaction.editReply({ embeds: [embeds.error('Niet gevonden', 'Geen product met die naam. Kies er een uit de lijst.')] });
+    return;
+  }
+
+  let photos;
+  try {
+    photos = await collectPhotoUploads(interaction);
+  } catch (err) {
+    await interaction.editReply({ embeds: [embeds.error('Foto niet gelukt', err.message)] });
+    return;
+  }
+  if (photos.length === 0) {
+    await interaction.editReply({ embeds: [embeds.warning('Geen foto\'s', 'Voeg minstens één foto toe (foto1 wordt de cover).')] });
+    return;
+  }
+
+  try {
+    await uploadPhotosBatched(interaction.guildId, product.id, photos, true);
+  } catch (err) {
+    await interaction.editReply({ embeds: [embeds.error('Foto\'s uploaden mislukt', err.message)] });
+    return;
+  }
+
+  refreshGuildNow(interaction.client, interaction.guildId).catch(() => {});
+  await interaction.editReply({
+    embeds: [embeds.success("Foto's vervangen", `**${product.name}** heeft nu ${photos.length} foto${photos.length === 1 ? '' : "'s"} (foto1 = cover).`)],
   });
 }
 

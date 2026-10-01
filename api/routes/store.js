@@ -64,7 +64,7 @@ const IMAGE_IDS_SQL = `(SELECT group_concat(id, ',') FROM (SELECT id FROM produc
 // Gemiddelde review-score en aantal, ook als subquery zodat elke product-query ze kan meenemen.
 const RATING_SQL = `(SELECT AVG(rating) FROM reviews WHERE product_id = p.id) AS rating_avg, (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) AS rating_count`;
 const PRODUCT_EXTRA_SQL = `${IMAGE_IDS_SQL}, ${RATING_SQL}`;
-const MAX_IMAGES = 8;
+const MAX_IMAGES = 15;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB per foto
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 

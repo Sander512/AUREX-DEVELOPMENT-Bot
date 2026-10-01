@@ -2,7 +2,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const api = require('../utils/api');
 const embeds = require('../utils/embeds');
-const { attachmentToUpload, addPhotoOptions, collectPhotoUploads } = require('../utils/productFile');
+const { attachmentToUpload, addPhotoOptions, collectPhotoUploads, uploadPhotosBatched } = require('../utils/productFile');
 
 async function findProductByName(guildId, name) {
   const { products } = await api.listProducts(guildId);
@@ -30,9 +30,7 @@ module.exports = {
     .addBooleanOption((opt) =>
       opt.setName('stuur_update').setDescription('DM naar alle kopers, mét het nieuwe bestand als je bestand meestuurt (standaard: nee)')
     ),
-    { replace: true }
-  ).addBooleanOption((opt) =>
-    opt.setName('foto_vervangen').setDescription('Vervang ALLE huidige foto\'s door de nieuwe (standaard: nee = toevoegen)')
+    { mode: 'append' }
   ),
 
   async autocomplete(interaction) {
@@ -105,7 +103,6 @@ module.exports = {
       }
     }
 
-    const replacePhotos = interaction.options.getBoolean('foto_vervangen') || false;
     let photos;
     try {
       photos = await collectPhotoUploads(interaction);
@@ -122,9 +119,8 @@ module.exports = {
     try {
       if (Object.keys(fields).length > 0) await api.updateProduct(interaction.guildId, product.id, fields);
       if (upload) await api.uploadProductFile(interaction.guildId, product.id, upload);
-      // Standaard worden nieuwe foto's achteraan toegevoegd (cover blijft). Met
-      // foto_vervangen=true gaan alle huidige foto's weg en wordt foto1 de cover.
-      if (photos.length > 0) await api.uploadProductImages(interaction.guildId, product.id, photos, replacePhotos);
+      // Nieuwe foto's worden achteraan toegevoegd (de cover blijft). Alles vervangen kan met /product fotos.
+      if (photos.length > 0) await uploadPhotosBatched(interaction.guildId, product.id, photos, false);
     } catch (err) {
       await interaction.editReply({ embeds: [embeds.error('Bijwerken mislukt', err.message)] });
       return;
