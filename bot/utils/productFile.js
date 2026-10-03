@@ -38,6 +38,13 @@ async function attachmentToUpload(attachment) {
 const MAX_PHOTOS = 15;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+// Video's gaan via dezelfde fotovelden (foto1..foto15) en staan in dezelfde
+// volgorde in de galerij. MP4/WEBM, max 50 MB, max 3 per product (zie api/routes/store.js).
+// Let op: Discord bepaalt zelf hoe groot een bijlage bij een slash command mag zijn
+// (vaak ~10 MB). Past je video daar niet in, upload hem dan via het dashboard.
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEOS = 3;
+const VIDEO_TYPES = new Set(['video/mp4', 'video/webm']);
 const api = require('./api');
 
 // mode: 'add' (nieuw product), 'append' (foto's achteraan toevoegen) of
@@ -46,11 +53,11 @@ function addPhotoOptions(builder, { mode = 'add' } = {}) {
   for (let i = 1; i <= MAX_PHOTOS; i++) {
     let description;
     if (mode === 'append') {
-      description = i === 1 ? `Nieuwe foto (wordt achteraan toegevoegd; max ${MAX_PHOTOS} totaal)` : `Nieuwe foto ${i} (wordt achteraan toegevoegd)`;
+      description = i === 1 ? `Nieuwe foto of video (komt achteraan; max ${MAX_PHOTOS} totaal)` : `Nieuwe foto of video ${i} (komt achteraan)`;
     } else if (mode === 'replace') {
-      description = i === 1 ? "Nieuwe cover (vervangt ALLE huidige foto's)" : `Foto ${i} (volgorde van de velden = volgorde in de shop)`;
+      description = i === 1 ? "Nieuwe cover (vervangt ALLE huidige foto's en video's)" : `Foto of video ${i} (volgorde van de velden = volgorde)`;
     } else {
-      description = i === 1 ? 'Cover-foto (foto1 = hoofdfoto, PNG/JPG/WEBP/GIF)' : `Foto ${i} — volgorde van de velden = volgorde in de shop`;
+      description = i === 1 ? 'Cover (foto1 = hoofdmedia; PNG/JPG/WEBP/GIF of MP4/WEBM-video)' : `Foto of video ${i} — volgorde van de velden = volgorde`;
     }
     builder.addAttachmentOption((opt) => opt.setName(`foto${i}`).setDescription(description));
   }
@@ -59,11 +66,15 @@ function addPhotoOptions(builder, { mode = 'add' } = {}) {
 
 async function imageAttachmentToUpload(attachment, label) {
   const type = String(attachment.contentType || '').toLowerCase().split(';')[0].trim();
-  if (!IMAGE_TYPES.has(type)) {
-    throw new Error(`${label} is geen geldige afbeelding. Gebruik PNG, JPG, WEBP of GIF.`);
+  const isVideo = VIDEO_TYPES.has(type);
+  if (!IMAGE_TYPES.has(type) && !isVideo) {
+    throw new Error(`${label} is geen geldig bestand. Gebruik PNG, JPG, WEBP, GIF of een MP4/WEBM-video.`);
   }
-  if (attachment.size > MAX_IMAGE_BYTES) {
-    throw new Error(`${label} is te groot (${(attachment.size / 1024 / 1024).toFixed(1)} MB, max ${MAX_IMAGE_BYTES / 1024 / 1024} MB per foto).`);
+  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  if (attachment.size > maxBytes) {
+    throw new Error(
+      `${label} is te groot (${(attachment.size / 1024 / 1024).toFixed(1)} MB, max ${maxBytes / 1024 / 1024} MB per ${isVideo ? 'video' : 'foto'}).`
+    );
   }
 
   let response;
@@ -76,7 +87,7 @@ async function imageAttachmentToUpload(attachment, label) {
 
   const buffer = Buffer.from(await response.arrayBuffer());
   return {
-    fileName: attachment.name || `${label}.png`,
+    fileName: attachment.name || `${label}.${isVideo ? type.split('/')[1] : 'png'}`,
     mimeType: type,
     dataBase64: buffer.toString('base64'),
   };
@@ -91,10 +102,12 @@ async function collectPhotoUploads(interaction) {
     if (!attachment) continue;
     uploads.push(await imageAttachmentToUpload(attachment, `Foto ${i}`));
   }
+  const videos = uploads.filter((u) => VIDEO_TYPES.has(u.mimeType)).length;
+  if (videos > MAX_VIDEOS) throw new Error(`Maximaal ${MAX_VIDEOS} video's per product (je stuurde er ${videos}).`);
   return uploads;
 }
 
-// Stuurt foto's in porties naar de API (max ~40 MB base64 per request), zodat
+// Stuurt foto's en video's in porties naar de API (max ~40 MB base64 per request; één video van 50 MB gaat alleen), zodat
 // 15 grote foto's nooit in één enorme request hoeven. Bij replace=true gaat de
 // eerste portie als "vervang alles" en de rest wordt erachter gezet.
 async function uploadPhotosBatched(guildId, productId, photos, replace) {

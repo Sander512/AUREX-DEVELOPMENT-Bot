@@ -195,7 +195,7 @@ async function executeAdd(interaction) {
   if (photos.length > 0) {
     try {
       await uploadPhotosBatched(interaction.guildId, product.id, photos, true);
-      photoNote = `\n**Foto's:** ${photos.length} (foto1 = cover)`;
+      photoNote = `\n**Foto's/video's:** ${photos.length} (foto1 = cover)`;
     } catch (err) {
       photoNote = `\n⚠️ Het product staat erin, maar de foto's uploaden mislukte: ${err.message}. Voeg ze toe via \`/product update\` of het dashboard.`;
     }

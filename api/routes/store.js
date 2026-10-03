@@ -60,13 +60,27 @@ function parseJsonArray(raw) {
 
 // Geüploade foto's: id's in volgorde (cover eerst), als komma-lijst uit één
 // subquery zodat elke bestaande product-query er simpel bij kan.
-const IMAGE_IDS_SQL = `(SELECT group_concat(id, ',') FROM (SELECT id FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC)) AS image_ids`;
+const IMAGE_IDS_SQL = `(SELECT group_concat(id, ',') FROM (SELECT id FROM product_images WHERE product_id = p.id AND mime_type LIKE 'image/%' ORDER BY position ASC, created_at ASC)) AS image_ids`;
+// Alle media (foto's én video's) in volgorde, als "id|i" of "id|v". image_ids blijft alleen foto's,
+// zodat covers, Discord-embeds en bundels nooit per ongeluk een video als afbeelding krijgen.
+const MEDIA_IDS_SQL = `(SELECT group_concat(id || '|' || kind, ',') FROM (SELECT id, CASE WHEN mime_type LIKE 'video/%' THEN 'v' ELSE 'i' END AS kind FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC)) AS media_ids`;
 // Gemiddelde review-score en aantal, ook als subquery zodat elke product-query ze kan meenemen.
 const RATING_SQL = `(SELECT AVG(rating) FROM reviews WHERE product_id = p.id) AS rating_avg, (SELECT COUNT(*) FROM reviews WHERE product_id = p.id) AS rating_count`;
-const PRODUCT_EXTRA_SQL = `${IMAGE_IDS_SQL}, ${RATING_SQL}`;
-const MAX_IMAGES = 15;
+const PRODUCT_EXTRA_SQL = `${IMAGE_IDS_SQL}, ${MEDIA_IDS_SQL}, ${RATING_SQL}`;
+const MAX_IMAGES = 15; // foto's + video's samen
+const MAX_VIDEOS = 3;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB per foto
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB per video
+const ALLOWED_VIDEO_TYPES = new Set(['video/mp4', 'video/webm']);
+const VIDEO_CHUNK_BYTES = 4 * 1024 * 1024; // max grootte van één Range-antwoord
+
+// Controleert de eerste bytes, zodat een hernoemd bestand niet als video wordt opgeslagen.
+function looksLikeVideo(buffer, mimeType) {
+  if (mimeType === 'video/mp4') return buffer.length > 12 && buffer.toString('ascii', 4, 8) === 'ftyp';
+  if (mimeType === 'video/webm') return buffer.length > 4 && buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3;
+  return false;
+}
 
 // Regel onderaan bestel-DM's: nodigt kopers uit om een review te schrijven.
 function reviewNudge(guildId) {
@@ -79,6 +93,22 @@ function uploadedImages(row) {
   const ids = row && row.image_ids ? String(row.image_ids).split(',').filter(Boolean) : [];
   const base = config.publicUrl ? String(config.publicUrl).replace(/\/$/, '') : '';
   return ids.map((imageId) => ({ id: imageId, url: `${base}/store/product-image/${row.id}/${imageId}` }));
+}
+
+// Foto's én video's in galerij-volgorde: [{ id, type: 'image'|'video', url }].
+function uploadedMedia(row) {
+  const entries = row && row.media_ids ? String(row.media_ids).split(',').filter(Boolean) : [];
+  const base = config.publicUrl ? String(config.publicUrl).replace(/\/$/, '') : '';
+  return entries.map((entry) => {
+    const [mediaId, kind] = entry.split('|');
+    return { id: mediaId, type: kind === 'v' ? 'video' : 'image', url: `${base}/store/product-image/${row.id}/${mediaId}` };
+  });
+}
+
+// Wat de webshop-galerij laat zien: geüploade media, daarna eventuele oude losse foto-links.
+function galleryMedia(row) {
+  if (row.media_ids === undefined) return allImageUrls(row).map((url) => ({ type: 'image', url }));
+  return [...uploadedMedia(row).map((m) => ({ type: m.type, url: m.url })), ...parseJsonArray(row.image_urls).map((url) => ({ type: 'image', url }))];
 }
 
 // Alle foto's van een product: eerst de geüploade (eerste = cover), daarna
@@ -107,6 +137,7 @@ function rowToPublicProduct(row) {
     changelog: row.changelog || '',
     category: row.category || null,
     imageUrls: allImageUrls(row),
+    media: galleryMedia(row),
     createdAt: row.created_at,
     ratingAvg: row.rating_avg !== null && row.rating_avg !== undefined ? Math.round(Number(row.rating_avg) * 10) / 10 : null,
     ratingCount: Number(row.rating_count || 0),
@@ -119,7 +150,7 @@ function rowToPublicProduct(row) {
 function rowToAdminProduct(row) {
   return {
     ...rowToPublicProduct(row),
-    images: uploadedImages(row),
+    images: uploadedMedia(row),
     linkImageUrls: parseJsonArray(row.image_urls),
     changelog: row.changelog || '',
     active: !!row.active,
@@ -548,34 +579,82 @@ router.get(
   })
 );
 
-// GET /store/product-image/:productId/:imageId — publieke foto (de webshop
-// laat hem cross-origin zien, dus CORP moet op cross-origin staan; helmet
-// zet standaard same-origin, wat de foto's op Vercel zou blokkeren).
-// Het imageId is een willekeurige UUID, dus de URL verandert zodra een foto
+// GET /store/product-image/:productId/:imageId — publieke foto of video (de
+// webshop laat hem cross-origin zien, dus CORP moet op cross-origin staan;
+// helmet zet standaard same-origin, wat de media op Vercel zou blokkeren).
+// Het id is een willekeurige UUID, dus de URL verandert zodra een bestand
 // wordt vervangen — daarom mag hij "immutable" gecachet worden.
+// Video's worden met HTTP Range in stukken geserveerd (nodig voor afspelen en
+// spoelen, vooral in Safari) en per stuk uit de database gelezen, zodat een
+// video van 50 MB nooit in één keer in het geheugen hoeft.
 router.get(
   '/product-image/:productId/:imageId',
   asyncHandler(async (req, res) => {
     const { productId, imageId } = req.params;
     const r = await db.execute({
-      sql: `SELECT i.mime_type, i.data FROM product_images i
+      sql: `SELECT i.mime_type, length(i.data) AS size,
+                   CASE WHEN i.mime_type LIKE 'video/%' THEN NULL ELSE i.data END AS data
+            FROM product_images i
             JOIN products p ON p.id = i.product_id
             WHERE i.id = ? AND i.product_id = ? AND p.active = 1`,
       args: [imageId, productId],
     });
     const row = r.rows[0];
-    if (!row) return res.status(404).json({ error: 'Foto niet gevonden' });
+    if (!row) return res.status(404).json({ error: 'Bestand niet gevonden' });
 
     res.setHeader('Content-Type', row.mime_type);
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    res.send(blobToBuffer(row.data));
+
+    if (!String(row.mime_type).startsWith('video/')) {
+      return res.send(blobToBuffer(row.data));
+    }
+
+    const size = Number(row.size);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const header = req.headers.range;
+    if (!header) {
+      const full = await db.execute({ sql: 'SELECT data FROM product_images WHERE id = ?', args: [imageId] });
+      return res.send(blobToBuffer(full.rows[0].data));
+    }
+
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+    if (!m || (m[1] === '' && m[2] === '')) {
+      res.setHeader('Content-Range', `bytes */${size}`);
+      return res.status(416).end();
+    }
+
+    let start;
+    let end = size - 1;
+    if (m[1] === '') {
+      start = Math.max(size - Number(m[2]), 0); // "bytes=-500": de laatste 500 bytes
+    } else {
+      start = Number(m[1]);
+      if (m[2] !== '') end = Math.min(Number(m[2]), size - 1);
+      if (end - start + 1 > VIDEO_CHUNK_BYTES) end = start + VIDEO_CHUNK_BYTES - 1;
+    }
+    if (start >= size || start > end) {
+      res.setHeader('Content-Range', `bytes */${size}`);
+      return res.status(416).end();
+    }
+
+    const chunk = await db.execute({
+      sql: 'SELECT substr(data, ?, ?) AS chunk FROM product_images WHERE id = ?',
+      args: [start + 1, end - start + 1, imageId],
+    });
+    const buffer = blobToBuffer(chunk.rows[0].chunk);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${start + buffer.length - 1}/${size}`);
+    res.setHeader('Content-Length', buffer.length);
+    res.end(buffer);
   })
 );
 
 // POST /store/admin/product-images/:id
 //   { guildId, replace?: boolean, images: [{ fileName, mimeType, dataBase64 }] }
+// ("images" mogen ook video's zijn: MP4 of WEBM, max 50 MB, max 3 per product.)
 // Voegt foto's toe aan het einde (volgorde = volgorde van de lijst; de eerste
 // foto van een product is de cover). Met replace=true worden eerst alle
 // bestaande geüploade foto's van dit product verwijderd.
@@ -597,27 +676,45 @@ router.post(
     const prepared = [];
     for (const img of images) {
       const mimeType = img && typeof img.mimeType === 'string' ? img.mimeType.toLowerCase().split(';')[0].trim() : '';
-      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
-        return res.status(400).json({ error: 'Alleen PNG, JPG, WEBP of GIF zijn toegestaan als productfoto.' });
+      const isVideo = ALLOWED_VIDEO_TYPES.has(mimeType);
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType) && !isVideo) {
+        return res.status(400).json({ error: 'Alleen PNG, JPG, WEBP, GIF of een MP4/WEBM-video zijn toegestaan.' });
       }
       if (typeof img.dataBase64 !== 'string' || img.dataBase64.length === 0) {
         return res.status(400).json({ error: 'Een van de foto\'s is leeg.' });
       }
       const buffer = Buffer.from(img.dataBase64, 'base64');
       if (buffer.length === 0) return res.status(400).json({ error: 'Een van de foto\'s is leeg.' });
-      if (buffer.length > MAX_IMAGE_BYTES) {
+      if (isVideo) {
+        if (buffer.length > MAX_VIDEO_BYTES) {
+          return res.status(413).json({ error: `Een video is te groot (max ${MAX_VIDEO_BYTES / 1024 / 1024} MB per video).` });
+        }
+        if (!looksLikeVideo(buffer, mimeType)) {
+          return res.status(400).json({ error: 'Een van de bestanden is geen geldige MP4/WEBM-video.' });
+        }
+      } else if (buffer.length > MAX_IMAGE_BYTES) {
         return res.status(413).json({ error: `Een foto is te groot (max ${MAX_IMAGE_BYTES / 1024 / 1024} MB per foto).` });
       }
       const fileName =
         typeof img.fileName === 'string' ? img.fileName.trim().replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').slice(0, 200) : null;
-      prepared.push({ fileName, mimeType, buffer });
+      prepared.push({ fileName, mimeType, buffer, isVideo });
     }
 
     const existing = replace
       ? 0
       : (await db.execute({ sql: 'SELECT COUNT(*) AS n FROM product_images WHERE product_id = ?', args: [id] })).rows[0].n;
     if (Number(existing) + prepared.length > MAX_IMAGES) {
-      return res.status(400).json({ error: `Een product mag maximaal ${MAX_IMAGES} foto's hebben (er staan er al ${existing}).` });
+      return res.status(400).json({ error: `Een product mag maximaal ${MAX_IMAGES} foto's en video's hebben (er staan er al ${existing}).` });
+    }
+
+    const newVideos = prepared.filter((p) => p.isVideo).length;
+    if (newVideos > 0) {
+      const existingVideos = replace
+        ? 0
+        : Number((await db.execute({ sql: "SELECT COUNT(*) AS n FROM product_images WHERE product_id = ? AND mime_type LIKE 'video/%'", args: [id] })).rows[0].n);
+      if (existingVideos + newVideos > MAX_VIDEOS) {
+        return res.status(400).json({ error: `Een product mag maximaal ${MAX_VIDEOS} video's hebben (er staan er al ${existingVideos}).` });
+      }
     }
 
     if (replace) await db.execute({ sql: 'DELETE FROM product_images WHERE product_id = ?', args: [id] });
@@ -1000,7 +1097,7 @@ function rowToReview(r) {
 }
 
 const REVIEW_SELECT = `SELECT r.*, p.name AS product_name,
-  (SELECT id FROM product_images WHERE product_id = p.id ORDER BY position ASC, created_at ASC LIMIT 1) AS cover_id
+  (SELECT id FROM product_images WHERE product_id = p.id AND mime_type LIKE 'image/%' ORDER BY position ASC, created_at ASC LIMIT 1) AS cover_id
   FROM reviews r JOIN products p ON p.id = r.product_id`;
 
 // GET /store/reviews/:guildId?productId=&limit=&offset= — publiek.

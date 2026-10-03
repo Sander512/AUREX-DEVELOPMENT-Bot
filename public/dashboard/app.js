@@ -743,6 +743,9 @@ function formatPriceAdmin(cents, currency) {
 // ---- Productfoto's ----
 const MAX_PHOTOS = 15;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEOS = 3;
+const isVideoType = (type) => /^video\/(mp4|webm)$/.test(type);
 let newProductPhotos = []; // File[] — index 0 = cover
 
 function fileToBase64(file) {
@@ -788,13 +791,46 @@ async function uploadPhotoFiles(productId, files, replace) {
   await flush();
 }
 
-function validatePhotoFiles(files, alreadyThere = 0) {
-  if (alreadyThere + files.length > MAX_PHOTOS) return `Maximaal ${MAX_PHOTOS} foto's per product`;
+function validatePhotoFiles(files, alreadyThere = 0, videosThere = 0) {
+  if (alreadyThere + files.length > MAX_PHOTOS) return `Maximaal ${MAX_PHOTOS} foto's en video's per product`;
+  let videos = videosThere;
   for (const f of files) {
-    if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) return `"${f.name}" is geen PNG, JPG, WEBP of GIF`;
-    if (f.size > MAX_PHOTO_BYTES) return `"${f.name}" is groter dan 8 MB`;
+    if (isVideoType(f.type)) {
+      videos += 1;
+      if (videos > MAX_VIDEOS) return `Maximaal ${MAX_VIDEOS} video's per product`;
+      if (f.size > MAX_VIDEO_BYTES) return `"${f.name}" is groter dan 50 MB`;
+    } else if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
+      return `"${f.name}" is geen PNG, JPG, WEBP, GIF, MP4 of WEBM`;
+    } else if (f.size > MAX_PHOTO_BYTES) {
+      return `"${f.name}" is groter dan 8 MB`;
+    }
   }
   return null;
+}
+
+// Voorbeeld-element voor een foto of video (video: stilstaand eerste beeld + ▶).
+function mediaPreviewEl(url, isVideo, alt) {
+  if (!isVideo) {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = alt;
+    img.loading = 'lazy';
+    return img;
+  }
+  const video = document.createElement('video');
+  video.src = `${url}#t=0.1`;
+  video.muted = true;
+  video.preload = 'metadata';
+  video.playsInline = true;
+  video.setAttribute('aria-label', alt);
+  return video;
+}
+
+function playBadge() {
+  const b = document.createElement('span');
+  b.className = 'photo-play';
+  b.textContent = '▶';
+  return b;
 }
 
 function renderNewPhotoPreview() {
@@ -803,10 +839,9 @@ function renderNewPhotoPreview() {
   newProductPhotos.forEach((file, i) => {
     const item = document.createElement('div');
     item.className = `photo-item${i === 0 ? ' is-cover' : ''}`;
-    const img = document.createElement('img');
-    img.src = URL.createObjectURL(file);
-    img.alt = file.name;
-    item.appendChild(img);
+    const vid = isVideoType(file.type);
+    item.appendChild(mediaPreviewEl(URL.createObjectURL(file), vid, file.name));
+    if (vid) item.appendChild(playBadge());
     if (i === 0) {
       const badge = document.createElement('span');
       badge.className = 'photo-badge';
@@ -838,7 +873,7 @@ function renderNewPhotoPreview() {
 $('sp_photos').addEventListener('change', (e) => {
   const picked = Array.from(e.target.files);
   e.target.value = ''; // zodat je dezelfde foto later opnieuw kunt kiezen
-  const error = validatePhotoFiles(picked, newProductPhotos.length);
+  const error = validatePhotoFiles(picked, newProductPhotos.length, newProductPhotos.filter((f) => isVideoType(f.type)).length);
   if (error) {
     $('addProductStatus').textContent = `❌ ${error}`;
     $('addProductStatus').style.color = 'var(--danger)';
@@ -857,11 +892,8 @@ function renderProductPhotos(row, product, reload) {
   images.forEach((img, i) => {
     const item = document.createElement('div');
     item.className = `photo-item${i === 0 ? ' is-cover' : ''}`;
-    const el = document.createElement('img');
-    el.src = img.url;
-    el.alt = `${product.name} ${i + 1}`;
-    el.loading = 'lazy';
-    item.appendChild(el);
+    item.appendChild(mediaPreviewEl(img.url, img.type === 'video', `${product.name} ${i + 1}`));
+    if (img.type === 'video') item.appendChild(playBadge());
     if (i === 0) {
       const badge = document.createElement('span');
       badge.className = 'photo-badge';
@@ -871,7 +903,7 @@ function renderProductPhotos(row, product, reload) {
       const cover = document.createElement('button');
       cover.type = 'button';
       cover.className = 'photo-cover-btn';
-      cover.textContent = 'Maak cover';
+      cover.textContent = img.type === 'video' ? 'Zet vooraan' : 'Maak cover';
       cover.addEventListener('click', async () => {
         cover.disabled = true;
         try {
@@ -888,9 +920,9 @@ function renderProductPhotos(row, product, reload) {
     remove.type = 'button';
     remove.className = 'photo-remove';
     remove.textContent = '✕';
-    remove.title = 'Foto verwijderen';
+    remove.title = 'Verwijderen';
     remove.addEventListener('click', async () => {
-      if (!confirm('Deze foto verwijderen?')) return;
+      if (!confirm(img.type === 'video' ? 'Deze video verwijderen?' : 'Deze foto verwijderen?')) return;
       remove.disabled = true;
       try {
         await api('DELETE', `/store/admin/product-images/${product.id}/${img.id}`, { guildId: state.guildId });
@@ -907,17 +939,17 @@ function renderProductPhotos(row, product, reload) {
   if (images.length < MAX_PHOTOS) {
     const label = document.createElement('label');
     label.className = 'photo-add';
-    label.textContent = '+ Foto\'s';
+    label.textContent = '+ Foto\'s / video';
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm';
     input.multiple = true;
     input.hidden = true;
     input.addEventListener('change', async () => {
       const picked = Array.from(input.files);
       input.value = '';
       if (picked.length === 0) return;
-      const error = validatePhotoFiles(picked, images.length);
+      const error = validatePhotoFiles(picked, images.length, images.filter((m) => m.type === 'video').length);
       if (error) return alert(error);
       label.textContent = 'Uploaden...';
       try {
@@ -925,7 +957,7 @@ function renderProductPhotos(row, product, reload) {
         await reload();
       } catch (err) {
         alert(`Mislukt: ${err.message}`);
-        label.textContent = '+ Foto\'s';
+        label.textContent = '+ Foto\'s / video';
       }
     });
     label.appendChild(input);
