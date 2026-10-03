@@ -82,6 +82,7 @@ if (config.shopOrigin) {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Max-Age', '7200'); // preflight-antwoord onthouden
       res.setHeader('Vary', 'Origin');
     }
     if (req.method === 'OPTIONS') return res.status(204).end();
