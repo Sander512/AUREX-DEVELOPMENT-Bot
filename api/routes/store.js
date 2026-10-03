@@ -587,12 +587,117 @@ router.get(
 // Video's worden met HTTP Range in stukken geserveerd (nodig voor afspelen en
 // spoelen, vooral in Safari) en per stuk uit de database gelezen, zodat een
 // video van 50 MB nooit in één keer in het geheugen hoeft.
+// Video's blijven in het geheugen (LRU), zodat elk Range-verzoek direct uit RAM
+// komt in plaats van telkens een of twee roundtrips naar de database te kosten.
+// Dat is wat het starten en spoelen van een video traag maakte.
+const VIDEO_CACHE_MAX_BYTES = 150 * 1024 * 1024;
+const VIDEO_ACTIVE_RECHECK_MS = 60 * 1000; // verwijderde video / gedeactiveerd product: binnen een minuut weg
+const videoCache = new Map(); // imageId -> { productId, mime, buffer, checkedAt } (volgorde = LRU)
+const videoLoading = new Map(); // imageId -> Promise (voorkomt dubbel laden)
+let videoCacheBytes = 0;
+
+function videoCacheEvict() {
+  for (const [id, entry] of videoCache) {
+    if (videoCacheBytes <= VIDEO_CACHE_MAX_BYTES) break;
+    videoCache.delete(id);
+    videoCacheBytes -= entry.buffer.length;
+  }
+}
+
+async function getCachedVideo(productId, imageId) {
+  let entry = videoCache.get(imageId);
+  if (entry && entry.productId === productId) {
+    if (Date.now() - entry.checkedAt > VIDEO_ACTIVE_RECHECK_MS) {
+      const r = await db.execute({ sql: 'SELECT 1 FROM product_images i JOIN products p ON p.id = i.product_id WHERE i.id = ? AND i.product_id = ? AND p.active = 1', args: [imageId, productId] });
+      if (!r.rows[0]) {
+        videoCache.delete(imageId);
+        videoCacheBytes -= entry.buffer.length;
+        return null;
+      }
+      entry.checkedAt = Date.now();
+    }
+    videoCache.delete(imageId); // naar het einde = recent gebruikt
+    videoCache.set(imageId, entry);
+    return entry;
+  }
+
+  if (!videoLoading.has(imageId)) {
+    const load = (async () => {
+      const r = await db.execute({
+        sql: `SELECT i.mime_type, i.data FROM product_images i
+              JOIN products p ON p.id = i.product_id
+              WHERE i.id = ? AND i.product_id = ? AND p.active = 1 AND i.mime_type LIKE 'video/%'`,
+        args: [imageId, productId],
+      });
+      const row = r.rows[0];
+      if (!row) return null;
+      const e = { productId, mime: row.mime_type, buffer: blobToBuffer(row.data), checkedAt: Date.now() };
+      videoCache.set(imageId, e);
+      videoCacheBytes += e.buffer.length;
+      videoCacheEvict();
+      return e;
+    })().finally(() => videoLoading.delete(imageId));
+    videoLoading.set(imageId, load);
+  }
+  return videoLoading.get(imageId);
+}
+
+function sendVideo(req, res, entry) {
+  const { buffer, mime } = entry;
+  const size = buffer.length;
+  res.setHeader('Content-Type', mime);
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Accept-Ranges', 'bytes');
+
+  const header = req.headers.range;
+  if (!header) {
+    res.setHeader('Content-Length', size);
+    return res.end(buffer);
+  }
+
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+  if (!m || (m[1] === '' && m[2] === '')) {
+    res.setHeader('Content-Range', `bytes */${size}`);
+    return res.status(416).end();
+  }
+
+  let start;
+  let end = size - 1;
+  if (m[1] === '') {
+    start = Math.max(size - Number(m[2]), 0); // "bytes=-500": de laatste 500 bytes
+  } else {
+    start = Number(m[1]);
+    if (m[2] !== '') end = Math.min(Number(m[2]), size - 1);
+    if (end - start + 1 > VIDEO_CHUNK_BYTES) end = start + VIDEO_CHUNK_BYTES - 1;
+  }
+  if (start >= size || start > end) {
+    res.setHeader('Content-Range', `bytes */${size}`);
+    return res.status(416).end();
+  }
+
+  const part = buffer.subarray(start, end + 1);
+  res.status(206);
+  res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+  res.setHeader('Content-Length', part.length);
+  return res.end(part);
+}
+
 router.get(
   '/product-image/:productId/:imageId',
   asyncHandler(async (req, res) => {
     const { productId, imageId } = req.params;
+
+    // Video die al in het geheugen staat: geen database nodig.
+    if (videoCache.has(imageId)) {
+      const hit = await getCachedVideo(productId, imageId);
+      if (hit) return sendVideo(req, res, hit);
+      return res.status(404).json({ error: 'Bestand niet gevonden' });
+    }
+
     const r = await db.execute({
-      sql: `SELECT i.mime_type, length(i.data) AS size,
+      sql: `SELECT i.mime_type,
                    CASE WHEN i.mime_type LIKE 'video/%' THEN NULL ELSE i.data END AS data
             FROM product_images i
             JOIN products p ON p.id = i.product_id
@@ -602,53 +707,17 @@ router.get(
     const row = r.rows[0];
     if (!row) return res.status(404).json({ error: 'Bestand niet gevonden' });
 
+    if (String(row.mime_type).startsWith('video/')) {
+      const entry = await getCachedVideo(productId, imageId);
+      if (!entry) return res.status(404).json({ error: 'Bestand niet gevonden' });
+      return sendVideo(req, res, entry);
+    }
+
     res.setHeader('Content-Type', row.mime_type);
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-
-    if (!String(row.mime_type).startsWith('video/')) {
-      return res.send(blobToBuffer(row.data));
-    }
-
-    const size = Number(row.size);
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    const header = req.headers.range;
-    if (!header) {
-      const full = await db.execute({ sql: 'SELECT data FROM product_images WHERE id = ?', args: [imageId] });
-      return res.send(blobToBuffer(full.rows[0].data));
-    }
-
-    const m = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
-    if (!m || (m[1] === '' && m[2] === '')) {
-      res.setHeader('Content-Range', `bytes */${size}`);
-      return res.status(416).end();
-    }
-
-    let start;
-    let end = size - 1;
-    if (m[1] === '') {
-      start = Math.max(size - Number(m[2]), 0); // "bytes=-500": de laatste 500 bytes
-    } else {
-      start = Number(m[1]);
-      if (m[2] !== '') end = Math.min(Number(m[2]), size - 1);
-      if (end - start + 1 > VIDEO_CHUNK_BYTES) end = start + VIDEO_CHUNK_BYTES - 1;
-    }
-    if (start >= size || start > end) {
-      res.setHeader('Content-Range', `bytes */${size}`);
-      return res.status(416).end();
-    }
-
-    const chunk = await db.execute({
-      sql: 'SELECT substr(data, ?, ?) AS chunk FROM product_images WHERE id = ?',
-      args: [start + 1, end - start + 1, imageId],
-    });
-    const buffer = blobToBuffer(chunk.rows[0].chunk);
-    res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${start + buffer.length - 1}/${size}`);
-    res.setHeader('Content-Length', buffer.length);
-    res.end(buffer);
+    return res.send(blobToBuffer(row.data));
   })
 );
 
