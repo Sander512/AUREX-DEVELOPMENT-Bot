@@ -46,6 +46,8 @@ const config = {
     staffRoleId: process.env.STAFF_ROLE_ID || null,
     managementRoleId: process.env.MANAGEMENT_ROLE_ID || null,
     auditLogChannelId: process.env.AUDIT_LOG_CHANNEL_ID || null,
+    // Kanaal voor joins/leaves/rol-wijzigingen (werkt meteen, zonder commando).
+    activityLogChannelId: process.env.ACTIVITY_LOG_CHANNEL_ID || null,
   },
 
   // Colors used across embeds — matches Aurex | Development branding

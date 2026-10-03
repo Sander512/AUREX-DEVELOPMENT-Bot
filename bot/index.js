@@ -14,14 +14,32 @@ const { handleMemberJoin } = require('./utils/welcome');
 const api = require('./utils/api');
 const { startDmQueue } = require('./utils/dmQueue');
 const { startProductChannelSync } = require('./utils/productChannel');
+const security = require('./utils/security');
+const activityLog = require('./utils/activityLog');
 
-const client = new Client({
+// Security-module: GuildMessages (anti-spam) en GuildModeration (anti-nuke,
+// guildBanAdd) zijn NIET-privileged intents, dus daar hoef je niets voor aan
+// te zetten in de Developer Portal.
+//
+// MessageContent is wel privileged en alleen nodig om invite-links in
+// berichten te herkennen. Zet daarom pas SECURITY_MESSAGE_CONTENT=true in
+// .env nadat je "Message Content Intent" in het Developer Portal hebt
+// aangezet (Bot > Privileged Gateway Intents), anders kan de bot niet inloggen.
+const intents = [
   // GuildMembers is a privileged intent — it must also be turned ON for
-  // this bot in the Discord Developer Portal (Bot > Privileged Gateway
-  // Intents > "Server Members Intent"), or guildMemberAdd will never fire
-  // and the welcome message will silently never send.
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-});
+  // this bot in the Developer Portal ("Server Members Intent"), or
+  // guildMemberAdd will never fire (welcome + anti-raid stop working).
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildModeration,
+];
+if (process.env.SECURITY_MESSAGE_CONTENT === 'true') intents.push(GatewayIntentBits.MessageContent);
+
+const client = new Client({ intents });
+
+security.init(client);
+activityLog.init(client);
 
 client.commands = new Collection();
 
@@ -44,6 +62,8 @@ logger.info(`${client.commands.size} commands geladen.`);
 client.once('ready', async () => {
   logger.info(`Ingelogd als ${client.user.tag}`);
   client.user.setActivity(config.brand.activity);
+
+  security.start(client).catch((err) => logger.error('Security-module starten mislukt:', err));
 
   // Reports every server the bot is currently in to the API, so the
   // dashboard's "kies een server" screen (after Discord login) knows
@@ -87,6 +107,15 @@ client.on('guildDelete', async (guild) => {
 // ---- Welcome messages ----
 client.on('guildMemberAdd', async (member) => {
   try {
+    // Eerst de beveiliging: is het lid geweerd (raid/te nieuw account),
+    // dan slaan we het welkomstbericht over.
+    const removed = await security.handleJoin(member).catch((err) => {
+      logger.error(`Fout in anti-raid voor ${member.id}:`, err);
+      return false;
+    });
+    activityLog.logJoin(member, removed).catch((err) => logger.error('Activiteiten-log (join) fout:', err));
+    if (removed) return;
+
     await handleMemberJoin(member, api);
   } catch (err) {
     logger.error(`Fout bij afhandelen welkomstbericht voor ${member.id} in ${member.guild.id}:`, err);
