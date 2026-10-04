@@ -1,7 +1,7 @@
 // api/server.js
 // Aurex | Development API — Express server.
 // Handles the dashboard login, ticket panel, welcome messages, verify
-// panel and rules system for the Discord bot.
+// panel, rules system and giveaways for the Discord bot.
 
 require('dotenv').config();
 
@@ -13,6 +13,7 @@ const ticketsRoutes = require('./routes/tickets');
 const welcomeRoutes = require('./routes/welcome');
 const verifyRoutes = require('./routes/verify');
 const rulesRoutes = require('./routes/rules');
+const giveawaysRoutes = require('./routes/giveaways');
 const authRoutes = require('./routes/auth');
 const discordGuildsRoutes = require('./routes/discordGuilds');
 const storeRoutes = require('./routes/store');
@@ -142,6 +143,10 @@ app.use('/tickets', ticketsRoutes);
 app.use('/welcome', welcomeRoutes);
 app.use('/verify', verifyRoutes);
 app.use('/rules', rulesRoutes);
+// Giveaways: zelfde gemengde auth als tickets — bot-only endpoints vragen
+// X-API-Key, het dashboard-overzicht mag ook met een Discord-sessie. Zie
+// per-route middleware in routes/giveaways.js.
+app.use('/giveaways', giveawaysRoutes);
 // Publieke productenlijst + checkout leven hier ook al onder /store (het
 // hierboven gemounte /store/webhook is de enige uitzondering die apart
 // staat, om de raw-body reden hierboven).

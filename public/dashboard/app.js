@@ -136,6 +136,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
       settings: ['Paneel instellingen', 'Pas het uiterlijk en gedrag van je ticket panel volledig aan.'],
       types: ['Ticket types', 'Beheer de opties die gebruikers kunnen kiezen in het panel.'],
       tickets: ['Open tickets', 'Overzicht van alle momenteel open of geclaimde tickets.'],
+      giveaways: ['Giveaways', 'Overzicht van lopende en afgelopen giveaways in deze server.'],
       welcome: ['Welkomstbericht', 'Stel in wat er gebeurt zodra iemand de server joint.'],
       verify: ['Verificatie', 'Stel het verificatie-paneel en de bijbehorende rol in.'],
       rules: ['Regels', 'Stel de regels-embed in die met /rules-send geplaatst wordt.'],
@@ -145,6 +146,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     $('pageSubtitle').textContent = titles[btn.dataset.tab][1];
 
     if (btn.dataset.tab === 'tickets') loadTickets();
+    if (btn.dataset.tab === 'giveaways') loadGiveaways();
     if (btn.dataset.tab === 'welcome') loadWelcomeConfig();
     if (btn.dataset.tab === 'verify') loadVerifyConfig();
     if (btn.dataset.tab === 'rules') loadRulesConfig();
@@ -437,6 +439,59 @@ async function loadTickets() {
 }
 
 $('refreshTicketsBtn').addEventListener('click', loadTickets);
+
+// ---- Giveaways tab (alleen overzicht) ----
+async function loadGiveaways() {
+  const activeList = $('activeGiveawaysList');
+  const endedList = $('endedGiveawaysList');
+  activeList.innerHTML = '<div class="empty-state">Laden...</div>';
+  endedList.innerHTML = '<div class="empty-state">Laden...</div>';
+
+  try {
+    const [{ giveaways: active }, { giveaways: ended }] = await Promise.all([
+      api('GET', `/giveaways/guild/${state.guildId}?status=active`),
+      api('GET', `/giveaways/guild/${state.guildId}?status=ended`),
+    ]);
+
+    renderGiveawayList(activeList, active, 'Geen lopende giveaways.', (g) => `eindigt over ${formatCountdown(g.endsAt)}`);
+    renderGiveawayList(endedList, ended, 'Nog geen afgelopen giveaways.', (g) =>
+      g.winners?.length ? `${g.winners.length} winnaar(s)` : 'niemand deed mee'
+    );
+  } catch (err) {
+    activeList.innerHTML = `<div class="empty-state">Fout bij laden: ${escapeHtml(err.message)}</div>`;
+    endedList.innerHTML = '';
+  }
+}
+
+function formatCountdown(endsAt) {
+  const ms = endsAt - Date.now();
+  if (ms <= 0) return 'zo';
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}u`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+function renderGiveawayList(container, giveaways, emptyText, badgeText) {
+  if (giveaways.length === 0) {
+    container.innerHTML = `<div class="empty-state">${emptyText}</div>`;
+    return;
+  }
+
+  container.innerHTML = '';
+  giveaways.forEach((g) => {
+    const row = document.createElement('div');
+    row.className = 'ticket-row';
+    row.innerHTML = `
+      <div>🎉 ${escapeHtml(g.prize)} — ${g.winnerCount} winnaar(s), ${g.entryCount} deelnemer(s)</div>
+      <span class="ticket-badge">${escapeHtml(badgeText(g))}</span>
+    `;
+    container.appendChild(row);
+  });
+}
+
+$('refreshGiveawaysBtn').addEventListener('click', loadGiveaways);
 
 // ---- Welcome message tab ----
 function fillWelcomeForm(config) {

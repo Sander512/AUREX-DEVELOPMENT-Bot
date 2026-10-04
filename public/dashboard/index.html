@@ -49,6 +49,7 @@
       <button class="nav-item active" data-tab="settings">⚙️ Paneel instellingen</button>
       <button class="nav-item" data-tab="types">🏷️ Ticket types</button>
       <button class="nav-item" data-tab="tickets">📋 Open tickets</button>
+      <button class="nav-item" data-tab="giveaways">🎉 Giveaways</button>
       <button class="nav-item" data-tab="welcome">👋 Welkomstbericht</button>
       <button class="nav-item" data-tab="verify">🔐 Verificatie</button>
       <button class="nav-item" data-tab="rules">📜 Regels</button>
@@ -286,6 +287,27 @@
           <button id="refreshTicketsBtn" class="btn btn-ghost btn-small">🔄 Vernieuwen</button>
         </div>
         <div id="ticketsList" class="tickets-list"></div>
+      </div>
+    </section>
+
+    <!-- ---- Giveaways tab (alleen overzicht) ---- -->
+    <section id="tab-giveaways" class="tab-panel hidden">
+      <div class="panel-card notice">
+        <strong>Giveaways starten/beëindigen doe je in Discord</strong>
+        <p class="muted">Dit is een overzicht. Gebruik <code>/giveaway start</code>, <code>/giveaway end</code> en <code>/giveaway reroll</code> in Discord om giveaways te beheren.</p>
+      </div>
+
+      <div class="panel-card">
+        <div class="flex-between">
+          <h2>Lopende giveaways</h2>
+          <button id="refreshGiveawaysBtn" class="btn btn-ghost btn-small">🔄 Vernieuwen</button>
+        </div>
+        <div id="activeGiveawaysList" class="tickets-list"></div>
+      </div>
+
+      <div class="panel-card">
+        <h2>Afgelopen giveaways <span class="hint">(laatste 50)</span></h2>
+        <div id="endedGiveawaysList" class="tickets-list"></div>
       </div>
     </section>
 

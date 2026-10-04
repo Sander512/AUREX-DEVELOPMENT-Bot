@@ -322,6 +322,31 @@ CREATE TABLE IF NOT EXISTS product_channel_config (
   updated_at INTEGER NOT NULL
 );
 
+-- ---- Giveaways ----
+-- Knop-gebaseerde giveaway (🎉 "Meedoen"-knop). Deelnemers staan hier als
+-- JSON-array van Discord user-ID's en worden via POST /giveaways/enter
+-- aangepast zodra iemand op de knop klikt — dat voedt de live
+-- "Entries: N"-teller in de embed.
+CREATE TABLE IF NOT EXISTS giveaways (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT UNIQUE NOT NULL,
+  prize TEXT NOT NULL,
+  description TEXT,
+  winner_count INTEGER NOT NULL DEFAULT 1,
+  host_id TEXT NOT NULL,
+  required_role_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active', -- active | ended | cancelled
+  entries TEXT NOT NULL DEFAULT '[]', -- JSON-array van Discord user-ID's die meedoen
+  winners TEXT, -- JSON-array van Discord user-ID's, gezet zodra de giveaway afgelopen is
+  ends_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  ended_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_giveaways_status ON giveaways(status, ends_at);
+CREATE INDEX IF NOT EXISTS idx_giveaways_guild ON giveaways(guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_products_guild ON products(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_id, position);
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id, created_at);

@@ -27,6 +27,7 @@ const MANAGEMENT_COMMANDS = new Set([
   'verify-panel',
   'rules-send',
   'product',
+  'giveaway',
   'security',
 ]);
 

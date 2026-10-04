@@ -84,6 +84,16 @@ const api = {
   updateRulesConfig: (guildId, fields) => request('POST', '/rules/config', { guildId, ...fields }),
   setRulesMessageId: (guildId, messageId) => request('POST', '/rules/message', { guildId, messageId }),
 
+  // ---- Giveaways ----
+  createGiveaway: (data) => request('POST', '/giveaways/create', data),
+  enterGiveaway: (id, userId) => request('POST', '/giveaways/enter', { id, userId }),
+  getActiveGiveaways: () => request('GET', '/giveaways/active'),
+  getGiveaway: (id) => request('GET', `/giveaways/${id}`),
+  listGuildGiveaways: (guildId, status) => request('GET', `/giveaways/guild/${guildId}${status ? `?status=${status}` : ''}`),
+  endGiveaway: (id, winners) => request('POST', '/giveaways/end', { id, winners }),
+  rerollGiveaway: (id, winners) => request('POST', '/giveaways/reroll', { id, winners }),
+  cancelGiveaway: (id) => request('POST', '/giveaways/cancel', { id }),
+
   // ---- Webshop DM-wachtrij ----
   // De API heeft zelf geen Discord-verbinding, dus zet klaarstaande DM's in
   // een tabel; de bot pollt die hier leeg (zie bot/utils/dmQueue.js).

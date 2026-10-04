@@ -167,3 +167,16 @@ start.js      Combined entry point (API + bot in 1 proces — zie hieronder)
 
 Rollen (`STAFF_ROLE_ID`, `MANAGEMENT_ROLE_ID`) stel je in via `.env`. Server-admins
 (Discord "Administrator" permissie) hebben altijd overal toegang toe.
+
+## Giveaways
+
+Knop-gebaseerde giveaways (🎉 "Meedoen"-knop met live deelnemersteller), overgenomen van het Forever-systeem.
+
+Commands (alleen Management/Administrator):
+
+- `/giveaway start [kanaal] [vereiste_rol]` — opent een formulier (duur, aantal winnaars, prijs, omschrijving)
+- `/giveaway end` — beëindig een lopende giveaway meteen en trek winnaars
+- `/giveaway reroll [aantal]` — trek nieuwe winnaar(s) voor een afgelopen giveaway
+- `/giveaway list` — toon lopende giveaways
+
+Winnaars worden automatisch getrokken zodra de timer afloopt (de bot controleert elke 20 seconden). Het dashboard heeft een tab "Giveaways" met een overzicht.

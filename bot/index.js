@@ -10,10 +10,12 @@ const embeds = require('./utils/embeds');
 const logger = require('./utils/logger');
 const ticketInteractions = require('./handlers/ticketInteractions');
 const verifyInteractions = require('./handlers/verifyInteractions');
+const giveawayInteractions = require('./handlers/giveawayInteractions');
 const { handleMemberJoin } = require('./utils/welcome');
 const api = require('./utils/api');
 const { startDmQueue } = require('./utils/dmQueue');
 const { startProductChannelSync } = require('./utils/productChannel');
+const { startGiveawayScheduler } = require('./giveawayScheduler');
 const security = require('./utils/security');
 const activityLog = require('./utils/activityLog');
 
@@ -84,6 +86,10 @@ client.once('ready', async () => {
   // Webshop: houdt het via /product kanaal ingestelde overzichtskanaal
   // per server automatisch up-to-date.
   startProductChannelSync(client);
+
+  // Giveaways: trekt automatisch winnaars zodra de timer van een
+  // lopende giveaway afloopt.
+  startGiveawayScheduler(client);
 });
 
 // Keeps the dashboard's server list live as the bot is added to / removed
@@ -150,6 +156,15 @@ client.on('interactionCreate', async (interaction) => {
       await verifyInteractions.handleVerifyInteraction(interaction);
     } catch (err) {
       logger.error('Fout bij verify interactie:', err);
+    }
+    return;
+  }
+
+  if (giveawayInteractions.isGiveawayInteraction(interaction)) {
+    try {
+      await giveawayInteractions.handleGiveawayInteraction(interaction);
+    } catch (err) {
+      logger.error('Fout bij giveaway interactie:', err);
     }
     return;
   }
