@@ -206,9 +206,8 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at INTEGER NOT NULL
 );
 
--- Eén rij per checkout-poging. Begint als 'pending' zodra de Stripe
--- Checkout Session wordt aangemaakt, en wordt pas 'completed' door de
--- webhook (nooit door de browser zelf — anders kan iemand een aankoop
+-- Eén rij per checkout-poging. Begint als 'pending' zodra de Tebex-basket
+-- wordt aangemaakt, en wordt pas 'completed' door de webhook (nooit door de browser zelf — anders kan iemand een aankoop
 -- vervalsen door gewoon naar de success-URL te surfen zonder te betalen).
 CREATE TABLE IF NOT EXISTS purchases (
   id TEXT PRIMARY KEY,
@@ -391,6 +390,11 @@ const MIGRATIONS = [
   // Kortingen: welke code er bij een aankoop gebruikt is en hoeveel korting dit product kreeg.
   `ALTER TABLE purchases ADD COLUMN discount_code TEXT`,
   `ALTER TABLE purchases ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0`,
+  // Tebex: welk Tebex-package bij dit product hoort, en welke basket/transactie bij een aankoop.
+  // (stripe_session_id / stripe_payment_intent blijven staan voor oude aankopen.)
+  `ALTER TABLE products ADD COLUMN tebex_package_id TEXT`,
+  `ALTER TABLE purchases ADD COLUMN tebex_basket_ident TEXT`,
+  `ALTER TABLE purchases ADD COLUMN tebex_transaction_id TEXT`,
 ];
 
 // One-time data migration: existing rows only have the old single

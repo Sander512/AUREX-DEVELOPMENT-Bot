@@ -1043,7 +1043,7 @@ function renderProductList(products) {
         <div><strong>${escapeHtml(p.name)}</strong> ${p.active ? '' : '<span class="hint">(inactief)</span>'} ${
           p.version ? `<span class="product-version">v${escapeHtml(p.version)}</span>` : ''
         }</div>
-        <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}</div>
+        <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}${p.priceCents > 0 && !p.tebexPackageId ? ' · <span style="color:var(--danger)">⚠️ geen Tebex-ID</span>' : ''}</div>
         <div class="product-photos photo-strip"></div>
       </div>
       <div class="product-admin-actions">
@@ -1164,6 +1164,7 @@ function setupProductEdit(row, product) {
         <div><label>Prijs <span class="hint">0 = gratis</span></label><input data-f="price" type="number" step="0.01" min="0" /></div>
         <div><label>Valuta</label><select data-f="currency"><option value="eur">EUR</option><option value="usd">USD</option><option value="gbp">GBP</option></select></div>
         <div><label>Categorie</label><input data-f="category" type="text" maxlength="60" /></div>
+        <div><label>Tebex package-ID</label><input data-f="tebex" type="text" inputmode="numeric" maxlength="20" /></div>
         <div><label>Versie</label><input data-f="version" type="text" maxlength="100" /></div>
       </div>
       <label>Changelog</label><textarea data-f="changelog" rows="3" maxlength="4000"></textarea>
@@ -1178,6 +1179,7 @@ function setupProductEdit(row, product) {
     f('price').value = ((product.priceCents || 0) / 100).toFixed(2);
     f('currency').value = product.currency || 'eur';
     f('category').value = product.category || '';
+    f('tebex').value = product.tebexPackageId || '';
     f('version').value = product.version || '';
     f('changelog').value = product.changelog || '';
     panel.classList.remove('hidden');
@@ -1201,6 +1203,7 @@ function setupProductEdit(row, product) {
           priceCents: Math.round(price * 100),
           currency: f('currency').value,
           category: f('category').value.trim(),
+          tebexPackageId: f('tebex').value.trim(),
           version: f('version').value.trim() || null,
           changelog: f('changelog').value.trim() || null,
         });
@@ -1534,6 +1537,7 @@ $('addProductBtn').addEventListener('click', async () => {
       version: $('sp_version').value.trim() || null,
       changelog: $('sp_changelog').value.trim() || null,
       category: $('sp_category').value.trim() || null,
+      tebexPackageId: $('sp_tebex').value.trim() || null,
     });
 
     try {
@@ -1571,6 +1575,7 @@ $('addProductBtn').addEventListener('click', async () => {
     $('sp_version').value = '';
     $('sp_changelog').value = '';
     $('sp_category').value = '';
+    $('sp_tebex').value = '';
     newProductPhotos = [];
     renderNewPhotoPreview();
     $('sp_file').value = '';

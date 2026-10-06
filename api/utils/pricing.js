@@ -4,8 +4,7 @@
 // geven. De server rekent; de browser toont alleen wat hier uitkomt.
 //
 // Volgorde:
-//   1. Bundelkorting: zit élk product van een actieve bundel in de wagen,
-//      dan krijgen die producten het bundelpercentage (bij overlap het hoogste).
+//   1. Bundelkorting: staat uit sinds Tebex (zie getActiveBundles).
 //   2. Kortingscode: percentage of vast bedrag over wat er na stap 1 overblijft.
 // Gratis producten (prijs 0) doen nergens aan mee.
 
@@ -24,18 +23,11 @@ function parseIds(raw) {
   }
 }
 
-async function getActiveBundles(guildId) {
-  const r = await db.execute({
-    sql: 'SELECT * FROM bundles WHERE guild_id = ? AND active = 1 ORDER BY created_at ASC',
-    args: [guildId],
-  });
-  return r.rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    description: row.description || '',
-    productIds: parseIds(row.product_ids),
-    discountPercent: Number(row.discount_percent),
-  }));
+// Bundelkorting kan niet mee naar Tebex (daar staan vaste prijzen per package),
+// dus bundels staan uit: de quote zou anders een korting tonen die niet wordt
+// afgerekend. Wil je een bundel, maak er dan een eigen package van in Tebex.
+async function getActiveBundles() {
+  return [];
 }
 
 // Zoekt en valideert een code. Geeft { code } of { error }.

@@ -1,5 +1,5 @@
 // api/routes/store.js
-// Webshop: producten, Stripe Checkout, aankoopgeschiedenis, admin-beheer
+// Webshop: producten, Tebex-checkout, aankoopgeschiedenis, admin-beheer
 // en de "Stuur update"-DM aan iedereen die een product heeft gekocht.
 //
 // Belangrijk architectuurpunt: de API heeft zelf GEEN Discord-verbinding
@@ -17,6 +17,7 @@ const { isDiscordId, isPositiveInteger } = require('../utils/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireApiKey, requireApiKeyOrGuildAccess, requireSession } = require('../middleware/auth');
 const { getSessionUser } = require('../utils/session');
+const tebex = require('../utils/tebex');
 const { priceCart, getActiveBundles, normalizeCode, parseIds } = require('../utils/pricing');
 const {
   getProductRow,
@@ -30,10 +31,8 @@ const {
 
 const router = express.Router();
 
-const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretKey) : null;
-
 const MAX_PRICE_CENTS = 100_000_000; // €1.000.000 — ruim genoeg, voorkomt kromme invoer
-const MIN_PAID_CENTS = 50; // Stripe weigert betalingen onder 50 cent; 0 = gratis product
+const MIN_PAID_CENTS = 50; // laagste prijs voor een betaald product; 0 = gratis product
 // Discord staat voor bots in DM's ongeveer 10 MB per bericht toe; we houden marge.
 // Dit is de opslaglimiet (dashboard-upload en /product add/update via de
 // bot). Let op: dit is NIET de limiet die geldt als de bot het bestand
@@ -154,6 +153,7 @@ function rowToAdminProduct(row) {
     linkImageUrls: parseJsonArray(row.image_urls),
     changelog: row.changelog || '',
     active: !!row.active,
+    tebexPackageId: row.tebex_package_id || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -241,15 +241,11 @@ router.get(
 // ---------------------------------------------------------------------
 
 // POST /store/checkout  { productIds: [...] }  (of { productId } voor één product)
-// Winkelwagen: alle producten gaan in één Stripe Checkout Session.
+// Winkelwagen: alle betaalde producten gaan in één Tebex-basket.
 router.post(
   '/checkout',
   requireSession,
   asyncHandler(async (req, res) => {
-    if (!stripe) {
-      return res.status(500).json({ error: 'Stripe is niet geconfigureerd (STRIPE_SECRET_KEY ontbreekt op de server).' });
-    }
-
     const body = req.body || {};
     let ids = Array.isArray(body.productIds) ? body.productIds : body.productId ? [body.productId] : [];
     ids = [...new Set(ids.filter((id) => typeof id === 'string' && id))];
@@ -289,10 +285,23 @@ router.post(
     const priceOf = new Map(pricing.items.map((i) => [i.id, i]));
     const codeUsed = pricing.code && pricing.codeDiscountCents > 0 ? pricing.code.code : null;
 
-    // Gratis producten (prijs 0) gaan niet langs Stripe: direct als afgerond
+    // Gratis producten (prijs 0) gaan niet langs Tebex: direct als afgerond
     // registreren en het bestand per DM laten versturen.
     const freeProducts = products.filter((p) => p.price_cents === 0);
     const paidProducts = products.filter((p) => p.price_cents > 0);
+
+    // Betaalde producten kunnen alleen via Tebex, en dan moet er een Tebex-package aan hangen.
+    // Dit staat bewust vóór het claimen van gratis producten, zodat een mislukte
+    // checkout niet half uitgevoerd wordt.
+    if (paidProducts.length > 0) {
+      if (!tebex.isConfigured()) {
+        return res.status(500).json({ error: 'Tebex is niet geconfigureerd (TEBEX_PUBLIC_TOKEN / TEBEX_WEBHOOK_SECRET ontbreken op de server).' });
+      }
+      const noPackage = paidProducts.find((p) => !p.tebex_package_id);
+      if (noPackage) {
+        return res.status(409).json({ error: `"${noPackage.name}" is tijdelijk niet te koop (er is nog geen Tebex-package aan gekoppeld).` });
+      }
+    }
 
     let freeClaimed = 0;
     if (freeProducts.length > 0) {
@@ -301,7 +310,7 @@ router.post(
       for (const product of freeProducts) {
         await db.execute({
           sql: `INSERT INTO purchases
-                (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, purchased_at)
+                (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, purchased_at)
                 VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?)`,
           args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, freeOrderId, product.currency, now, now],
         });
@@ -322,16 +331,12 @@ router.post(
     }
 
     const paidTotal = paidProducts.reduce((sum, p) => sum + priceOf.get(p.id).finalCents, 0);
-    const paidDiscount = paidProducts.reduce((sum, p) => {
-      const i = priceOf.get(p.id);
-      return sum + i.bundleDiscountCents + i.codeDiscountCents;
-    }, 0);
     const discountFor = (p) => {
       const i = priceOf.get(p.id);
       return { cents: i.bundleDiscountCents + i.codeDiscountCents, code: i.codeDiscountCents > 0 ? codeUsed : null };
     };
 
-    // 100% korting: er valt niets te betalen, dus ook niet langs Stripe — direct
+    // 100% korting: er valt niets te betalen, dus ook niet langs Tebex — direct
     // afronden zoals een gratis product.
     if (paidTotal === 0) {
       const orderId = crypto.randomUUID();
@@ -340,7 +345,7 @@ router.post(
         const d = discountFor(product);
         await db.execute({
           sql: `INSERT INTO purchases
-                (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, purchased_at, discount_code, discount_cents)
+                (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, purchased_at, discount_code, discount_cents)
                 VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?, ?, ?)`,
           args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, orderId, product.currency, now, now, d.code, d.cents],
         });
@@ -370,57 +375,33 @@ router.post(
     const shopBase = config.shopOrigin || `${config.publicUrl}/shop`;
     const successUrl = `${shopBase}/?guild=${guildId}&success=1`;
     const cancelUrl = `${shopBase}/?guild=${guildId}&canceled=1`;
-    const currency = paidProducts[0].currency;
 
-    // De korting gaat als Stripe-coupon mee (zichtbaar op de betaalpagina en
-    // het bonnetje); de regels zelf blijven op volle prijs.
-    let coupon = null;
-    let session;
+    // Een kortingscode gaat als coupon mee naar Tebex. Die code moet daar dus ook
+    // bestaan (zelfde naam en korting); anders weigeren we de checkout, zodat de klant
+    // nooit een ander bedrag betaalt dan in de winkelwagen stond.
+    let basket;
     try {
-      if (paidDiscount > 0) {
-        const label = codeUsed ? (pricing.bundleDiscountCents > 0 ? `Korting ${codeUsed} + bundel` : `Korting ${codeUsed}`) : 'Bundelkorting';
-        coupon = await stripe.coupons.create({
-          amount_off: paidDiscount,
-          currency,
-          duration: 'once',
-          max_redemptions: 1,
-          name: label.slice(0, 40),
-        });
-      }
-
-      session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        line_items: paidProducts.map((product) => ({
-          price_data: {
-            currency: product.currency,
-            product_data: {
-              name: product.name,
-              description: (product.description || '').slice(0, 500) || undefined,
-            },
-            unit_amount: product.price_cents,
-          },
-          quantity: 1,
-        })),
-        ...(coupon ? { discounts: [{ coupon: coupon.id }] } : {}),
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        metadata: { orderId, guildId, discordId: req.user.discordId, discountCode: codeUsed || '' },
+      basket = await tebex.createCheckout({
+        packageIds: paidProducts.map((p) => p.tebex_package_id),
+        custom: { orderId, guildId, discordId: req.user.discordId },
+        completeUrl: successUrl,
+        cancelUrl,
+        couponCode: codeUsed,
       });
     } catch (err) {
-      if (coupon) stripe.coupons.del(coupon.id).catch(() => {});
-      return res.status(502).json({ error: `Stripe-fout: ${err.message}` });
+      if (err.couponRejected) {
+        return res.status(400).json({ error: 'Deze kortingscode is niet bekend bij de betaalpagina (Tebex). Maak dezelfde code ook aan in je Tebex-panel.' });
+      }
+      return res.status(502).json({ error: `Tebex-fout: ${err.message}` });
     }
 
-    // Eén rij per product; stripe_session_id is UNIQUE, dus die staat
-    // alleen op de eerste rij — de webhook zoekt via order_id.
-    // amount_cents = wat er voor dit product écht is betaald (na korting).
-    for (let i = 0; i < paidProducts.length; i++) {
-      const product = paidProducts[i];
+    // Eén rij per product. amount_cents = wat er voor dit product naar verwachting
+    // is betaald (na korting); de webhook vervangt dat door het echte bedrag uit Tebex.
+    for (const product of paidProducts) {
       const d = discountFor(product);
       await db.execute({
         sql: `INSERT INTO purchases
-              (id, product_id, guild_id, discord_id, discord_username, stripe_session_id, order_id, amount_cents, currency, status, created_at, discount_code, discount_cents)
+              (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, discount_code, discount_cents)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
         args: [
           crypto.randomUUID(),
@@ -428,7 +409,7 @@ router.post(
           product.guild_id,
           req.user.discordId,
           req.user.username,
-          i === 0 ? session.id : null,
+          basket.ident,
           orderId,
           priceOf.get(product.id).finalCents,
           product.currency,
@@ -439,7 +420,7 @@ router.post(
       });
     }
 
-    res.json({ url: session.url, claimed: freeClaimed });
+    res.json({ url: basket.checkoutUrl, claimed: freeClaimed });
   })
 );
 
@@ -879,7 +860,7 @@ router.get(
 );
 
 function validateProductFields(fields, { partial }) {
-  const { name, description, priceCents, currency, version, changelog, active, category, imageUrls } = fields;
+  const { name, description, priceCents, currency, version, changelog, active, category, imageUrls, tebexPackageId } = fields;
 
   if (!partial || name !== undefined) {
     if (typeof name !== 'string' || name.trim().length === 0 || name.length > 200) {
@@ -912,6 +893,9 @@ function validateProductFields(fields, { partial }) {
   if (category !== undefined && category !== null) {
     if (typeof category !== 'string' || category.length > 60) return 'category mag max 60 tekens zijn';
   }
+  if (tebexPackageId !== undefined && tebexPackageId !== null && tebexPackageId !== '') {
+    if (!/^\d{1,20}$/.test(String(tebexPackageId).trim())) return 'tebexPackageId moet het cijfer-ID van het package in Tebex zijn (bv. 6276316)';
+  }
   if (imageUrls !== undefined && imageUrls !== null) {
     const ok =
       Array.isArray(imageUrls) &&
@@ -939,8 +923,8 @@ router.post(
 
     await db.execute({
       sql: `INSERT INTO products
-            (id, guild_id, name, description, price_cents, currency, version, changelog, category, image_urls, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+            (id, guild_id, name, description, price_cents, currency, version, changelog, category, image_urls, tebex_package_id, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       args: [
         id,
         guildId,
@@ -952,6 +936,7 @@ router.post(
         fields.changelog || null,
         (fields.category && fields.category.trim()) || null,
         fields.imageUrls && fields.imageUrls.length ? JSON.stringify(fields.imageUrls) : null,
+        (fields.tebexPackageId && String(fields.tebexPackageId).trim()) || null,
         now,
         now,
       ],
@@ -991,6 +976,7 @@ router.post(
       active: 'active',
       category: 'category',
       imageUrls: 'image_urls',
+      tebexPackageId: 'tebex_package_id',
     };
 
     const setClauses = [];
@@ -1003,6 +989,7 @@ router.post(
       if (camelKey === 'active') value = value ? 1 : 0;
       if (camelKey === 'category') value = (value && value.trim()) || null;
       if (camelKey === 'imageUrls') value = value && value.length ? JSON.stringify(value) : null;
+      if (camelKey === 'tebexPackageId') value = (value && String(value).trim()) || null;
       setClauses.push(`${column} = ?`);
       args.push(value);
     }

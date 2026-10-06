@@ -15,7 +15,7 @@ commands als het dashboard.
 - **📜 Regels** — configureerbare regels-embed, met `/rules-send` te (her)plaatsen;
   nogmaals uitvoeren werkt het bestaande bericht bij in plaats van te spammen.
 - **🛒 Webshop** — publieke `/shop`-pagina met producten, login met Discord, en echte
-  betalingen via Stripe Checkout. Beheer producten (prijs, versie, changelog) via
+  betalingen via Tebex. Beheer producten (prijs, versie, changelog) via
   het dashboard; met één klik op "Stuur update" krijgt iedereen die het product
   gekocht heeft een DM met de nieuwe versie. Zie "Webshop instellen" hieronder.
 - **Dashboard** — login met Discord, kies een server waar je "Manage Server" rechten
@@ -45,46 +45,43 @@ commands als het dashboard.
   naam getoond. Ongepaste reviews verwijder je in het dashboard (Webshop → Reviews).
 - **Kortingscodes** (dashboard → Webshop → Kortingscodes): percentage of vast bedrag, optioneel
   maximaal aantal keer en einddatum. Elke koper kan een code één keer gebruiken; een code telt pas
-  mee zodra er echt betaald is. 100% korting rekent zonder Stripe af.
-- **Bundels** (dashboard → Webshop → Bundels): 2-10 betaalde producten met een vaste korting. De
-  korting geldt automatisch als alle producten in de winkelwagen zitten en kan gestapeld worden met
-  een kortingscode. Bundels staan op de home- en shop-pagina.
-- De korting gaat als **Stripe-coupon** mee naar de betaalpagina (regels blijven op volle prijs).
-  De server rekent altijd zelf (`api/utils/pricing.js`); de browser toont alleen de uitkomst.
-- Na korting moet het totaal minimaal 0,50 zijn (minimum van Stripe), of precies 0 (gratis).
+  mee zodra er echt betaald is. 100% korting rekent zonder Tebex af.
+- **Bundels** staan uit sinds de overstap naar Tebex: Tebex rekent vaste prijzen per package af en
+  kan een eigen bundelkorting niet meekrijgen. Wil je een bundel, maak er dan een eigen package van in Tebex.
+- Een kortingscode gaat als **Tebex-coupon** mee naar de betaalpagina. Maak dezelfde code (zelfde
+  naam en korting) dus ook aan in je Tebex-panel; bestaat hij daar niet, dan weigert de checkout de code.
+  De server rekent de korting zelf uit (`api/utils/pricing.js`) voor de winkelwagen; Tebex rekent de echte betaling af.
+- Na korting moet het totaal minimaal 0,50 zijn, of precies 0 (gratis).
 - Labels op de kaarten: **Nieuw** (jonger dan 14 dagen), **Gratis**, **Bestseller** (meeste verkopen).
   Met de muis over een kaart zie je de tweede foto.
 - Nieuwe tabellen (`reviews`, `bundles`, `discount_codes`) en kolommen worden bij het starten
   automatisch aangemaakt; er hoeft niets handmatig te gebeuren.
 
-## Webshop instellen (Stripe)
+## Webshop instellen (Tebex)
 
 De webshop is een LOS project (map `aurex-shop-site`, bedoeld voor Vercel) en
 praat via `SHOP_ORIGIN` + CORS met deze bot/API. Zie de README in die map.
-Zonder Stripe-configuratie werkt de shop ook al (producten zichtbaar), maar "Kopen" geeft dan een duidelijke foutmelding.
+Zonder Tebex-configuratie werkt de shop ook al (producten zichtbaar), maar "Kopen" van een betaald product geeft dan een duidelijke foutmelding.
 Om echte betalingen te accepteren:
 
-1. Maak een [Stripe](https://dashboard.stripe.com/register) account (of gebruik
-   een bestaand account) en blijf voorlopig in **test mode** (schakelaar rechtsboven).
-2. Ga naar **Developers → API keys** en kopieer de **Secret key**
-   (`sk_test_...`) naar `STRIPE_SECRET_KEY`, en de **Publishable key** naar
-   `STRIPE_PUBLISHABLE_KEY`.
+1. Maak een [Tebex](https://www.tebex.io)-webstore aan en maak per betaald product een **package**
+   (type: eenmalige betaling, zonder game-deliverables of commando's — het bestand sturen wij zelf per DM).
+   Zet de prijs van het package gelijk aan de prijs in het dashboard: klanten betalen de Tebex-prijs.
+2. Ga naar **Developers → API Keys** en kopieer de **Public token** (Headless API) naar `TEBEX_PUBLIC_TOKEN`.
 3. Deploy de app eerst zo (zonder webhook secret) zodat je de publieke URL hebt.
-4. Ga naar **Developers → Webhooks → Add endpoint**, vul als URL in:
-   `<PUBLIC_URL>/store/webhook`, en vink minimaal het event
-   `checkout.session.completed` aan.
-5. Stripe toont daarna een **Signing secret** (`whsec_...`) — zet die in
-   `STRIPE_WEBHOOK_SECRET` en herstart de service.
+4. Ga naar **Developers → Webhooks → Endpoints → Add Endpoint**, vul als URL in:
+   `<PUBLIC_URL>/store/webhook` en vink minimaal `payment.completed` aan. Zet de **webhook secret**
+   van dat endpoint in `TEBEX_WEBHOOK_SECRET`, herstart de service en klik in Tebex op **Validate**.
+5. Vul bij elk betaald product het **Tebex package-ID** in (dashboard → Webshop, of `/product add|update tebex_id`).
+   Betaalde producten zonder package-ID kunnen niet gekocht worden; ze staan met ⚠️ in de lijst.
 6. Voeg producten toe via het dashboard-tabblad "🛒 Webshop", en deel de
    shop-link (staat bovenaan dat tabblad) met je klanten.
-7. Test een aankoop met [Stripe's testkaartnummers](https://docs.stripe.com/testing)
-   (bv. `4242 4242 4242 4242`, willekeurige toekomstige vervaldatum/CVC) voordat
-   je overschakelt naar live-mode keys.
+7. Test een aankoop (Tebex heeft een testmodus voor betalingen) voordat je live gaat.
 
-Betalingen worden pas als "voltooid" geregistreerd zodra Stripe's webhook
-bevestigt dat er echt betaald is — niet zodra iemand terug op de site landt.
-Dat voorkomt dat iemand een aankoop kan vervalsen door gewoon naar de
-"gelukt"-pagina te surfen.
+Betalingen worden pas als "voltooid" geregistreerd zodra Tebex's webhook (`payment.completed`,
+met geldige `X-Signature`) bevestigt dat er echt betaald is — niet zodra iemand terug op de site landt.
+Dat voorkomt dat iemand een aankoop kan vervalsen door gewoon naar de "gelukt"-pagina te surfen.
+Terugbetalingen en disputes worden alleen gelogd; downloads trek je zelf in.
 
 ## Projectstructuur
 

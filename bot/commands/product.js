@@ -48,6 +48,7 @@ module.exports = {
         .addStringOption((opt) => opt.setName('versie').setDescription('Versienummer, bv. 1.0.0').setMaxLength(100))
         .addStringOption((opt) => opt.setName('changelog').setDescription('Wat is er nieuw/anders').setMaxLength(4000))
         .addStringOption((opt) => opt.setName('categorie').setDescription('Bv. Bots, Templates, Scripts').setMaxLength(60))
+        .addStringOption((opt) => opt.setName('tebex_id').setDescription('Tebex package-ID (verplicht voor betaalde producten)').setMaxLength(20))
         .addStringOption((opt) =>
           opt.setName('afbeeldingen').setDescription('Foto-links (met spatie of komma ertussen), eerste = hoofdfoto').setMaxLength(2000)
         )
@@ -73,6 +74,7 @@ module.exports = {
         .addStringOption((opt) => opt.setName('changelog').setDescription('Wat is er veranderd').setMaxLength(4000))
         .addStringOption((opt) => opt.setName('omschrijving').setDescription('Nieuwe omschrijving').setMaxLength(4000))
         .addStringOption((opt) => opt.setName('categorie').setDescription('Nieuwe categorie').setMaxLength(60))
+        .addStringOption((opt) => opt.setName('tebex_id').setDescription('Tebex package-ID').setMaxLength(20))
         .addStringOption((opt) =>
           opt.setName('afbeeldingen').setDescription('Nieuwe foto-links (spatie/komma ertussen) — vervangt de oude').setMaxLength(2000)
         )
@@ -171,6 +173,7 @@ async function executeAdd(interaction) {
       version: interaction.options.getString('versie') || null,
       changelog: interaction.options.getString('changelog') || null,
       category: interaction.options.getString('categorie') || null,
+      tebexPackageId: interaction.options.getString('tebex_id') || null,
       imageUrls: (interaction.options.getString('afbeeldingen') || '').split(/[\s,]+/).filter(Boolean),
       currency: interaction.options.getString('valuta') || 'eur',
     }));
@@ -242,6 +245,7 @@ async function executeUpdate(interaction) {
   const actief = interaction.options.getBoolean('actief');
   const stuurUpdate = interaction.options.getBoolean('stuur_update') || false;
   const categorie = interaction.options.getString('categorie');
+  const tebexId = interaction.options.getString('tebex_id');
   const afbeeldingen = interaction.options.getString('afbeeldingen');
 
   if (nieuweVersie !== null) fields.version = nieuweVersie;
@@ -250,6 +254,7 @@ async function executeUpdate(interaction) {
   if (omschrijving !== null) fields.description = omschrijving;
   if (actief !== null) fields.active = actief;
   if (categorie !== null) fields.category = categorie;
+  if (tebexId !== null) fields.tebexPackageId = tebexId;
   if (afbeeldingen !== null) fields.imageUrls = afbeeldingen.split(/[\s,]+/).filter(Boolean);
 
   if (fields.priceCents !== undefined && fields.priceCents > 0 && fields.priceCents < 50) {
@@ -389,7 +394,8 @@ async function executeList(interaction) {
       const version = p.version ? ` (v${p.version})` : '';
       const price = p.priceCents === 0 ? 'Gratis' : `${(p.priceCents / 100).toFixed(2)} ${p.currency.toUpperCase()}`;
       const fileNote = p.hasFile ? '' : ' ⚠️ geen bestand';
-      return `${status} **${p.name}**${version} — ${price}${fileNote}`;
+      const tebexNote = p.priceCents > 0 && !p.tebexPackageId ? ' ⚠️ geen Tebex-ID' : '';
+      return `${status} **${p.name}**${version} — ${price}${fileNote}${tebexNote}`;
     });
 
     await interaction.editReply({

@@ -17,7 +17,7 @@ const giveawaysRoutes = require('./routes/giveaways');
 const authRoutes = require('./routes/auth');
 const discordGuildsRoutes = require('./routes/discordGuilds');
 const storeRoutes = require('./routes/store');
-const stripeWebhookHandler = require('./routes/storeWebhook');
+const tebexWebhookHandler = require('./routes/storeWebhook');
 const { initDb } = require('./database');
 const config = require('./config');
 const { requireApiKey } = require('./middleware/auth');
@@ -49,9 +49,9 @@ if (!config.discord.clientId || !config.discord.clientSecret) {
   console.log(`[AUTH] Discord OAuth redirect-URI: ${config.discord.redirectUri || '(niet ingesteld — PUBLIC_URL ontbreekt)'}`);
 }
 
-if (!config.stripe.secretKey || !config.stripe.webhookSecret) {
+if (!config.tebex.publicToken || !config.tebex.webhookSecret) {
   console.warn(
-    '[CONFIG WARNING] STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET ontbreken — de webshop-checkout en betaalbevestiging werken dan niet.'
+    '[CONFIG WARNING] TEBEX_PUBLIC_TOKEN / TEBEX_WEBHOOK_SECRET ontbreken — de webshop-checkout en betaalbevestiging werken dan niet.'
   );
 }
 
@@ -91,12 +91,12 @@ if (config.shopOrigin) {
   });
 }
 
-// MUST be mounted before express.json(): Stripe's signature check needs
+// MUST be mounted before express.json(): Tebex's X-Signature check needs
 // the raw, untouched request body. Once express.json() below has parsed
 // a request, that raw body is gone — so this route can never move under
 // the regular /store router (which uses express.json() like every other
 // route here).
-app.post('/store/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+app.post('/store/webhook', express.raw({ type: '*/*' }), tebexWebhookHandler);
 
 // Bestandsupload (base64 in JSON) heeft een grotere limiet nodig dan de rest.
 // Moet VÓÓR de globale express.json() staan; body-parser slaat een al

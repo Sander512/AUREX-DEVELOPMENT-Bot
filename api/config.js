@@ -39,13 +39,13 @@ const config = {
     redirectUri: env('DISCORD_REDIRECT_URI') || (PUBLIC_URL ? `${PUBLIC_URL}/auth/discord/callback` : ''),
   },
 
-  // Webshop — echte betalingen via Stripe Checkout. Alle drie komen uit
-  // je Stripe dashboard (Developers > API keys, en Developers > Webhooks
-  // voor de signing secret nadat je het webhook-endpoint hebt aangemaakt).
-  stripe: {
-    secretKey: env('STRIPE_SECRET_KEY') || null,
-    webhookSecret: env('STRIPE_WEBHOOK_SECRET') || null,
-    publishableKey: env('STRIPE_PUBLISHABLE_KEY') || null,
+  // Webshop — echte betalingen via Tebex (Headless API). Beide waarden
+  // komen uit je Tebex control panel: de public token onder Developers >
+  // API Keys (Headless API), de webhook secret onder Developers > Webhooks >
+  // Endpoints nadat je het endpoint hebt aangemaakt.
+  tebex: {
+    publicToken: env('TEBEX_PUBLIC_TOKEN') || null,
+    webhookSecret: env('TEBEX_WEBHOOK_SECRET') || null,
   },
 
   // Zet dit als de shop-pagina (public/shop) LOS van deze API gedeployed
