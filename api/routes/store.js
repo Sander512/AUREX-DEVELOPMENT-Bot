@@ -1,5 +1,5 @@
 // api/routes/store.js
-// Webshop: producten, Tebex-checkout, aankoopgeschiedenis, admin-beheer
+// Webshop: producten, eigen checkout (Mollie), bestellingen, aankoopgeschiedenis, admin-beheer
 // en de "Stuur update"-DM aan iedereen die een product heeft gekocht.
 //
 // Belangrijk architectuurpunt: de API heeft zelf GEEN Discord-verbinding
@@ -17,7 +17,17 @@ const { isDiscordId, isPositiveInteger } = require('../utils/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireApiKey, requireApiKeyOrGuildAccess, requireSession } = require('../middleware/auth');
 const { getSessionUser } = require('../utils/session');
-const tebex = require('../utils/tebex');
+const mollie = require('../utils/mollie');
+const {
+  insertOrder,
+  logEvent,
+  getOrderByNumber,
+  getOrderById,
+  serializeOrder,
+  parseItems,
+  syncOrder,
+  STATUS_LABELS,
+} = require('../utils/orders');
 const { priceCart, getActiveBundles, normalizeCode, parseIds } = require('../utils/pricing');
 const {
   getProductRow,
@@ -241,7 +251,7 @@ router.get(
 // ---------------------------------------------------------------------
 
 // POST /store/checkout  { productIds: [...] }  (of { productId } voor één product)
-// Winkelwagen: alle betaalde producten gaan in één Tebex-basket.
+// Winkelwagen: alle betaalde producten gaan in één bestelling (en één betaling).
 router.post(
   '/checkout',
   requireSession,
@@ -285,34 +295,60 @@ router.post(
     const priceOf = new Map(pricing.items.map((i) => [i.id, i]));
     const codeUsed = pricing.code && pricing.codeDiscountCents > 0 ? pricing.code.code : null;
 
-    // Gratis producten (prijs 0) gaan niet langs Tebex: direct als afgerond
+    // Gratis producten (prijs 0) gaan niet langs de betaalprovider: direct als afgerond
     // registreren en het bestand per DM laten versturen.
     const freeProducts = products.filter((p) => p.price_cents === 0);
     const paidProducts = products.filter((p) => p.price_cents > 0);
 
-    // Betaalde producten kunnen alleen via Tebex, en dan moet er een Tebex-package aan hangen.
-    // Dit staat bewust vóór het claimen van gratis producten, zodat een mislukte
-    // checkout niet half uitgevoerd wordt.
+    // Betaalde producten kunnen alleen via de eigen checkout (Mollie). Dit staat bewust vóór het
+    // claimen van gratis producten, zodat een mislukte checkout niet half uitgevoerd wordt.
     if (paidProducts.length > 0) {
-      if (!tebex.isConfigured()) {
-        return res.status(500).json({ error: 'Tebex is niet geconfigureerd (TEBEX_PUBLIC_TOKEN / TEBEX_WEBHOOK_SECRET ontbreken op de server).' });
+      if (!mollie.isConfigured()) {
+        return res.status(503).json({ error: 'Betalen is tijdelijk niet beschikbaar. Probeer het later opnieuw of neem contact op via Discord.' });
       }
-      const noPackage = paidProducts.find((p) => !p.tebex_package_id);
-      if (noPackage) {
-        return res.status(409).json({ error: `"${noPackage.name}" is tijdelijk niet te koop (er is nog geen Tebex-package aan gekoppeld).` });
+      // Bescherming tegen een lus van openstaande betalingen (per gebruiker).
+      const recent = await db.execute({
+        sql: `SELECT COUNT(*) AS n FROM orders WHERE discord_id = ? AND status = 'pending' AND created_at > ?`,
+        args: [req.user.discordId, Date.now() - 10 * 60 * 1000],
+      });
+      if (Number(recent.rows[0].n) >= 5) {
+        return res.status(429).json({ error: 'Je hebt al meerdere openstaande betalingen. Rond er eerst een af of wacht een paar minuten.' });
       }
     }
 
+    const snapshot = (list) =>
+      list.map((p) => ({
+        productId: p.id,
+        name: p.name,
+        version: p.version || null,
+        quantity: 1,
+        unitCents: Number(p.price_cents),
+        finalCents: priceOf.get(p.id).finalCents,
+      }));
+
     let freeClaimed = 0;
+    let freeOrderNumber = null;
     if (freeProducts.length > 0) {
-      const freeOrderId = crypto.randomUUID();
+      const freeOrder = await insertOrder({
+        guildId,
+        discordId: req.user.discordId,
+        username: req.user.username,
+        provider: 'free',
+        status: 'paid',
+        items: snapshot(freeProducts),
+        subtotalCents: 0,
+        discountCode: null,
+        discountCents: 0,
+        totalCents: 0,
+        currency: freeProducts[0].currency,
+      });
       const now = Date.now();
       for (const product of freeProducts) {
         await db.execute({
           sql: `INSERT INTO purchases
-                (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, purchased_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?)`,
-          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, freeOrderId, product.currency, now, now],
+                (id, product_id, guild_id, discord_id, discord_username, order_id, amount_cents, currency, status, created_at, purchased_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'completed', ?, ?)`,
+          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, freeOrder.id, product.currency, now, now],
         });
       }
       await queuePendingDm(
@@ -324,30 +360,44 @@ router.post(
         freeProducts.map((p) => p.id)
       );
       freeClaimed = freeProducts.length;
+      freeOrderNumber = freeOrder.orderNumber;
     }
 
     if (paidProducts.length === 0) {
-      return res.json({ free: true, claimed: freeClaimed });
+      return res.json({ free: true, claimed: freeClaimed, orderNumber: freeOrderNumber });
     }
 
     const paidTotal = paidProducts.reduce((sum, p) => sum + priceOf.get(p.id).finalCents, 0);
+    const paidSubtotal = paidProducts.reduce((sum, p) => sum + Number(p.price_cents), 0);
     const discountFor = (p) => {
       const i = priceOf.get(p.id);
       return { cents: i.bundleDiscountCents + i.codeDiscountCents, code: i.codeDiscountCents > 0 ? codeUsed : null };
     };
 
-    // 100% korting: er valt niets te betalen, dus ook niet langs Tebex — direct
+    // 100% korting: er valt niets te betalen, dus ook niet langs de provider — direct
     // afronden zoals een gratis product.
     if (paidTotal === 0) {
-      const orderId = crypto.randomUUID();
+      const zeroOrder = await insertOrder({
+        guildId,
+        discordId: req.user.discordId,
+        username: req.user.username,
+        provider: 'free',
+        status: 'paid',
+        items: snapshot(paidProducts),
+        subtotalCents: paidSubtotal,
+        discountCode: codeUsed,
+        discountCents: paidSubtotal,
+        totalCents: 0,
+        currency: paidProducts[0].currency,
+      });
       const now = Date.now();
       for (const product of paidProducts) {
         const d = discountFor(product);
         await db.execute({
           sql: `INSERT INTO purchases
-                (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, purchased_at, discount_code, discount_cents)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 'completed', ?, ?, ?, ?)`,
-          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, orderId, product.currency, now, now, d.code, d.cents],
+                (id, product_id, guild_id, discord_id, discord_username, order_id, amount_cents, currency, status, created_at, purchased_at, discount_code, discount_cents)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'completed', ?, ?, ?, ?)`,
+          args: [crypto.randomUUID(), product.id, product.guild_id, req.user.discordId, req.user.username, zeroOrder.id, product.currency, now, now, d.code, d.cents],
         });
       }
       if (codeUsed) {
@@ -361,7 +411,7 @@ router.post(
           .join('\n')}\n\nJe bestand${paidProducts.length === 1 ? ' volgt' : 'en volgen'} direct hieronder in dit gesprek.${reviewNudge(guildId)}`,
         paidProducts.map((p) => p.id)
       );
-      return res.json({ free: true, claimed: freeClaimed + paidProducts.length });
+      return res.json({ free: true, claimed: freeClaimed + paidProducts.length, orderNumber: zeroOrder.orderNumber });
     }
     if (paidTotal < MIN_PAID_CENTS) {
       return res.status(400).json({ error: 'Na korting is het totaalbedrag lager dan 0,50 (minimum van de betaalprovider). Haal een product uit je wagen of gebruik een andere code.' });
@@ -371,46 +421,39 @@ router.post(
       return res.status(500).json({ error: 'PUBLIC_URL is niet ingesteld op de server — nodig om na afrekenen terug te sturen.' });
     }
 
-    const orderId = crypto.randomUUID();
+    const currency = paidProducts[0].currency;
     const shopBase = config.shopOrigin || `${config.publicUrl}/shop`;
-    const successUrl = `${shopBase}/?guild=${guildId}&success=1`;
-    const cancelUrl = `${shopBase}/?guild=${guildId}&canceled=1`;
 
-    // Een kortingscode gaat als coupon mee naar Tebex. Die code moet daar dus ook
-    // bestaan (zelfde naam en korting); anders weigeren we de checkout, zodat de klant
-    // nooit een ander bedrag betaalt dan in de winkelwagen stond.
-    let basket;
-    try {
-      basket = await tebex.createCheckout({
-        packageIds: paidProducts.map((p) => p.tebex_package_id),
-        custom: { orderId, guildId, discordId: req.user.discordId },
-        completeUrl: successUrl,
-        cancelUrl,
-        couponCode: codeUsed,
-      });
-    } catch (err) {
-      if (err.couponRejected) {
-        return res.status(400).json({ error: 'Deze kortingscode is niet bekend bij de betaalpagina (Tebex). Maak dezelfde code ook aan in je Tebex-panel.' });
-      }
-      return res.status(502).json({ error: `Tebex-fout: ${err.message}` });
-    }
+    // Eerst de bestelling (status "wachten op betaling") vastleggen, dán pas de betaling
+    // aanmaken: zo bestaat de order al als de provider-webhook binnenkomt.
+    const order = await insertOrder({
+      guildId,
+      discordId: req.user.discordId,
+      username: req.user.username,
+      provider: 'mollie',
+      status: 'pending',
+      items: snapshot(paidProducts),
+      subtotalCents: paidSubtotal,
+      discountCode: codeUsed,
+      discountCents: paidSubtotal - paidTotal,
+      totalCents: paidTotal,
+      currency,
+    });
 
-    // Eén rij per product. amount_cents = wat er voor dit product naar verwachting
-    // is betaald (na korting); de webhook vervangt dat door het echte bedrag uit Tebex.
+    // Eén rij per product. amount_cents = wat er voor dit product (na korting) betaald wordt.
     for (const product of paidProducts) {
       const d = discountFor(product);
       await db.execute({
         sql: `INSERT INTO purchases
-              (id, product_id, guild_id, discord_id, discord_username, tebex_basket_ident, order_id, amount_cents, currency, status, created_at, discount_code, discount_cents)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+              (id, product_id, guild_id, discord_id, discord_username, order_id, amount_cents, currency, status, created_at, discount_code, discount_cents)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
         args: [
           crypto.randomUUID(),
           product.id,
           product.guild_id,
           req.user.discordId,
           req.user.username,
-          basket.ident,
-          orderId,
+          order.id,
           priceOf.get(product.id).finalCents,
           product.currency,
           Date.now(),
@@ -420,7 +463,80 @@ router.post(
       });
     }
 
-    res.json({ url: basket.checkoutUrl, claimed: freeClaimed });
+    let payment;
+    try {
+      payment = await mollie.createPayment({
+        amountCents: paidTotal,
+        currency,
+        description: `Aurex bestelling ${order.orderNumber}`,
+        redirectUrl: `${shopBase}/?guild=${guildId}&order=${encodeURIComponent(order.orderNumber)}`,
+        webhookUrl: `${config.publicUrl}/store/payments/webhook`,
+        metadata: { orderId: order.id, orderNumber: order.orderNumber, discordId: req.user.discordId },
+        idempotencyKey: order.id,
+      });
+    } catch (err) {
+      console.error(`[STORE] Betaling aanmaken bij Mollie mislukt voor ${order.orderNumber}:`, err.message);
+      await db.execute({ sql: `UPDATE orders SET status = 'failed', note = ?, updated_at = ? WHERE id = ?`, args: [`Betaling aanmaken mislukt: ${String(err.message).slice(0, 300)}`, Date.now(), order.id] });
+      await db.execute({ sql: `UPDATE purchases SET status = 'failed' WHERE order_id = ? AND status = 'pending'`, args: [order.id] });
+      await logEvent(order.id, null, 'checkout', 'create_failed', err.message);
+      return res.status(502).json({ error: 'De betaalprovider is op dit moment niet bereikbaar. Er is niets in rekening gebracht, probeer het zo opnieuw.' });
+    }
+
+    await db.execute({
+      sql: `UPDATE orders SET provider_payment_id = ?, provider_status = ?, checkout_url = ?, updated_at = ? WHERE id = ?`,
+      args: [payment.id, payment.status || 'open', payment.checkoutUrl, Date.now(), order.id],
+    });
+    await logEvent(order.id, payment.id, 'checkout', 'created', `${paidTotal} ${currency}`);
+
+    res.json({ url: payment.checkoutUrl, orderNumber: order.orderNumber, claimed: freeClaimed });
+  })
+);
+
+// ---------------------------------------------------------------------
+// Bestellingen van de ingelogde koper (betaalstatus, succes-/foutpagina)
+// ---------------------------------------------------------------------
+
+const ORDER_NUMBER = /^AX-\d{6}-[A-Z0-9]{6}$/;
+
+// GET /store/order/:orderNumber — status van één eigen bestelling. Staat de bestelling nog op
+// "wachten", dan vragen we de provider zelf om de actuele status (maximaal eens per 5 seconden),
+// zodat de klant ook ziet dat het gelukt is als de webhook nog onderweg is.
+router.get(
+  '/order/:orderNumber',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { orderNumber } = req.params;
+    if (!ORDER_NUMBER.test(orderNumber)) return res.status(400).json({ error: 'Ongeldig order-ID' });
+
+    let order = await getOrderByNumber(orderNumber);
+    // Eigen bestellingen only; een vreemd order-ID geeft hetzelfde antwoord als een onbestaand ID.
+    if (!order || order.discord_id !== req.user.discordId) return res.status(404).json({ error: 'Bestelling niet gevonden' });
+
+    if (order.status === 'pending' && order.provider_payment_id && Date.now() - Number(order.updated_at) > 5000) {
+      try {
+        order = await syncOrder(order, 'status-check');
+      } catch (err) {
+        console.warn(`[STORE] Status-check van ${orderNumber} mislukt: ${err.message}`);
+      }
+    }
+
+    res.json({ order: serializeOrder(order) });
+  })
+);
+
+// GET /store/my-payments/:guildId — recente bestellingen met betaalstatus voor "Mijn aankopen".
+router.get(
+  '/my-payments/:guildId',
+  requireSession,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const result = await db.execute({
+      sql: `SELECT * FROM orders WHERE guild_id = ? AND discord_id = ? AND provider != 'free' ORDER BY created_at DESC LIMIT 20`,
+      args: [guildId, req.user.discordId],
+    });
+    res.json({ orders: result.rows.map((o) => serializeOrder(o)) });
   })
 );
 
@@ -1639,6 +1755,163 @@ router.post(
     });
 
     res.json({ success: true });
+  })
+);
+
+// ---------------------------------------------------------------------
+// Admin — bestellingen en betaalstatussen (dashboard → tabblad Bestellingen)
+// ---------------------------------------------------------------------
+
+const ORDER_STATUSES = ['pending', 'paid', 'failed', 'canceled'];
+
+function likePattern(q) {
+  return `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+// GET /store/admin/orders/:guildId?status=&q=&limit=&offset=
+router.get(
+  '/admin/orders/:guildId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const status = ORDER_STATUSES.includes(req.query.status) ? req.query.status : null;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const where = ['guild_id = ?'];
+    const args = [guildId];
+    if (status) {
+      where.push('status = ?');
+      args.push(status);
+    }
+    if (q) {
+      where.push(`(order_number LIKE ? ESCAPE '\\' OR discord_username LIKE ? ESCAPE '\\' OR discord_id LIKE ? ESCAPE '\\' OR provider_payment_id LIKE ? ESCAPE '\\')`);
+      const pat = likePattern(q);
+      args.push(pat, pat, pat, pat);
+    }
+
+    const [rows, total, summary] = await Promise.all([
+      db.execute({ sql: `SELECT * FROM orders WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`, args: [...args, limit, offset] }),
+      db.execute({ sql: `SELECT COUNT(*) AS n FROM orders WHERE ${where.join(' AND ')}`, args }),
+      db.execute({ sql: `SELECT status, currency, COUNT(*) AS n, COALESCE(SUM(total_cents), 0) AS cents FROM orders WHERE guild_id = ? GROUP BY status, currency`, args: [guildId] }),
+    ]);
+
+    const counts = { pending: 0, paid: 0, failed: 0, canceled: 0 };
+    const revenue = {};
+    for (const r of summary.rows) {
+      if (counts[r.status] !== undefined) counts[r.status] += Number(r.n);
+      if (r.status === 'paid' && Number(r.cents) > 0) revenue[r.currency] = (revenue[r.currency] || 0) + Number(r.cents);
+    }
+
+    res.json({
+      orders: rows.rows.map((o) => serializeOrder(o, { admin: true })),
+      total: Number(total.rows[0].n),
+      limit,
+      offset,
+      counts,
+      revenue,
+    });
+  })
+);
+
+// GET /store/admin/orders/:guildId/:orderNumber — detail incl. logboek van betaal-events.
+router.get(
+  '/admin/orders/:guildId/:orderNumber',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, orderNumber } = req.params;
+    if (!isDiscordId(guildId) || !ORDER_NUMBER.test(orderNumber)) return res.status(400).json({ error: 'Ongeldige aanvraag' });
+
+    const order = await getOrderByNumber(orderNumber);
+    if (!order || order.guild_id !== guildId) return res.status(404).json({ error: 'Bestelling niet gevonden' });
+
+    const events = await db.execute({
+      sql: `SELECT source, event, detail, created_at FROM payment_events WHERE order_id = ? ORDER BY created_at DESC LIMIT 50`,
+      args: [order.id],
+    });
+
+    res.json({
+      order: serializeOrder(order, { admin: true }),
+      events: events.rows.map((e) => ({ source: e.source, event: e.event, detail: e.detail || null, createdAt: Number(e.created_at) })),
+    });
+  })
+);
+
+// POST /store/admin/orders/:guildId/:orderNumber/sync — status opnieuw bij de provider ophalen
+// (bv. als een webhook gemist is). Levert alsnog als de betaling blijkt te zijn gelukt.
+router.post(
+  '/admin/orders/:guildId/:orderNumber/sync',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId, orderNumber } = req.params;
+    if (!isDiscordId(guildId) || !ORDER_NUMBER.test(orderNumber)) return res.status(400).json({ error: 'Ongeldige aanvraag' });
+
+    let order = await getOrderByNumber(orderNumber);
+    if (!order || order.guild_id !== guildId) return res.status(404).json({ error: 'Bestelling niet gevonden' });
+    if (order.provider !== 'mollie' || !order.provider_payment_id) {
+      return res.status(409).json({ error: 'Deze bestelling heeft geen betaling bij de provider om te controleren.' });
+    }
+    if (!mollie.isConfigured()) return res.status(503).json({ error: 'MOLLIE_API_KEY is niet ingesteld op de server.' });
+
+    try {
+      order = await syncOrder(order, 'admin-sync');
+    } catch (err) {
+      return res.status(502).json({ error: `Controle bij de betaalprovider mislukt: ${err.message}` });
+    }
+    res.json({ order: serializeOrder(order, { admin: true }) });
+  })
+);
+
+// CSV-cel: aanhalingstekens verdubbelen en formules neutraliseren (=, +, -, @ aan het begin).
+function csvCell(value) {
+  let v = value === null || value === undefined ? '' : String(value);
+  if (/^[=+\-@\t\r]/.test(v)) v = `'${v}`;
+  return `"${v.replace(/"/g, '""')}"`;
+}
+
+// GET /store/admin/orders-export/:guildId — alle bestellingen als CSV (voor administratie).
+router.get(
+  '/admin/orders-export/:guildId',
+  requireApiKeyOrGuildAccess,
+  asyncHandler(async (req, res) => {
+    const { guildId } = req.params;
+    if (!isDiscordId(guildId)) return res.status(400).json({ error: 'Invalid guildId' });
+
+    const rows = await db.execute({ sql: `SELECT * FROM orders WHERE guild_id = ? ORDER BY created_at DESC LIMIT 20000`, args: [guildId] });
+    const header = ['Order-ID', 'Datum', 'Status', 'Klant', 'Discord-ID', 'Producten', 'Subtotaal', 'Korting', 'Kortingscode', 'Totaal', 'Valuta', 'Methode', 'Provider-ID', 'Betaald op'];
+    const iso = (t) => (t ? new Date(Number(t)).toISOString() : '');
+    const eur = (c) => (Number(c) / 100).toFixed(2);
+
+    const lines = [header.map(csvCell).join(',')];
+    for (const o of rows.rows) {
+      lines.push(
+        [
+          o.order_number,
+          iso(o.created_at),
+          STATUS_LABELS[o.status] || o.status,
+          o.discord_username,
+          o.discord_id,
+          parseItems(o).map((i) => `${i.quantity || 1}x ${i.name}`).join('; '),
+          eur(o.subtotal_cents),
+          eur(o.discount_cents),
+          o.discount_code,
+          eur(o.total_cents),
+          String(o.currency).toUpperCase(),
+          o.provider_method,
+          o.provider_payment_id,
+          iso(o.paid_at),
+        ]
+          .map(csvCell)
+          .join(',')
+      );
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="aurex-bestellingen-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(`\ufeff${lines.join('\r\n')}\r\n`);
   })
 );
 

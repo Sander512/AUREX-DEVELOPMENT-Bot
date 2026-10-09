@@ -54,6 +54,7 @@
       <button class="nav-item" data-tab="verify">🔐 Verificatie</button>
       <button class="nav-item" data-tab="rules">📜 Regels</button>
       <button class="nav-item" data-tab="shop">🛒 Webshop</button>
+      <button class="nav-item" data-tab="orders">💳 Bestellingen</button>
     </nav>
 
     <div class="sidebar-footer">
@@ -569,9 +570,6 @@
         <label>Categorie <span class="hint">optioneel, bv. Bots, Templates, Scripts — wordt een filter in de shop</span></label>
         <input id="sp_category" type="text" maxlength="60" placeholder="Bots" />
 
-        <label>Tebex package-ID <span class="hint">verplicht voor betaalde producten — het cijfer-ID van het package in je Tebex-panel (Packages). De prijs die klanten betalen is de prijs van dat package, zet hem daar gelijk aan de prijs hierboven.</span></label>
-        <input id="sp_tebex" type="text" inputmode="numeric" maxlength="20" placeholder="6276316" />
-
         <label>Foto's en video's <span class="hint">optioneel, max 15 samen. Foto: PNG/JPG/WEBP/GIF (max 8 MB). Video: MP4 of WEBM (max 50 MB, max 3). De eerste is de cover — klik op een foto om hem de cover te maken. Video's komen in de galerij op de plek waar je ze zet.</span></label>
         <input id="sp_photos" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm" multiple />
         <div id="sp_photoPreview" class="photo-strip"></div>
@@ -613,7 +611,7 @@
 
       <div class="panel-card">
         <h2>Kortingscodes</h2>
-        <p class="muted hint">Klanten vullen de code in hun winkelwagen in. De korting gaat als Tebex-coupon mee naar de betaalpagina: maak dezelfde code (zelfde naam en korting) ook aan in je Tebex-panel, anders weigert de checkout de code. Elke koper kan een code maar één keer gebruiken. Een code telt pas mee als er echt is betaald.</p>
+        <p class="muted hint">Klanten vullen de code in hun winkelwagen in. De korting wordt door de shop zelf berekend en meteen verwerkt in het bedrag dat de klant betaalt; je hoeft de code nergens anders aan te maken. Elke koper kan een code maar één keer gebruiken. Een code telt pas mee als er echt is betaald.</p>
         <label>Code <span class="hint">3-30 tekens: letters, cijfers, - en _</span></label>
         <input id="dc_code" type="text" maxlength="30" placeholder="ZOMER25" />
         <label>Soort korting</label>
@@ -638,6 +636,33 @@
         <h2>Reviews</h2>
         <p class="muted hint">Alleen kopers kunnen een review schrijven. Je kunt ongepaste reviews hier verwijderen.</p>
         <div id="reviewAdminList" class="product-admin-list"></div>
+      </div>
+    </section>
+
+    <section id="tab-orders" class="tab-panel hidden">
+      <div class="panel-card">
+        <div class="stat-grid" id="orderStats"></div>
+      </div>
+
+      <div class="panel-card">
+        <div class="order-toolbar">
+          <select id="orderStatusFilter" aria-label="Filter op status">
+            <option value="">Alle statussen</option>
+            <option value="pending">Wachten op betaling</option>
+            <option value="paid">Betaald</option>
+            <option value="failed">Mislukt</option>
+            <option value="canceled">Geannuleerd</option>
+          </select>
+          <input id="orderSearch" type="search" placeholder="Zoek op order-ID, Discord-naam of -ID..." />
+          <button id="orderRefreshBtn" class="btn btn-ghost btn-small" type="button">↻ Vernieuwen</button>
+          <button id="orderExportBtn" class="btn btn-ghost btn-small" type="button">⬇ CSV</button>
+        </div>
+        <div id="orderList" class="order-admin-list"></div>
+        <div class="order-pager">
+          <button id="orderPrevBtn" class="btn btn-ghost btn-small" type="button">← Vorige</button>
+          <span id="orderPageInfo" class="muted"></span>
+          <button id="orderNextBtn" class="btn btn-ghost btn-small" type="button">Volgende →</button>
+        </div>
       </div>
     </section>
   </main>

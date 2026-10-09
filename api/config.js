@@ -48,6 +48,13 @@ const config = {
     webhookSecret: env('TEBEX_WEBHOOK_SECRET') || null,
   },
 
+  // Eigen checkout: de betaling wordt vanuit de eigen website gestart en door Mollie
+  // verwerkt (iDEAL, creditcard, PayPal, Bancontact, ...). De secret key staat alleen
+  // hier op de server en gaat nooit naar de browser.
+  payments: {
+    mollieApiKey: env('MOLLIE_API_KEY') || null,
+  },
+
   // Zet dit als de shop-pagina (public/shop) LOS van deze API gedeployed
   // wordt (bv. op Vercel, terwijl bot+API op Render blijven). Geen
   // trailing slash, bv. https://aurex-shop.vercel.app. Nodig voor CORS

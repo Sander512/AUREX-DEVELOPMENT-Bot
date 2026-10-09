@@ -141,6 +141,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
       verify: ['Verificatie', 'Stel het verificatie-paneel en de bijbehorende rol in.'],
       rules: ['Regels', 'Stel de regels-embed in die met /rules-send geplaatst wordt.'],
       shop: ['Webshop', 'Beheer producten, bekijk aankopen en stuur update-DM\'s naar kopers.'],
+      orders: ['Bestellingen', 'Alle bestellingen met betaalstatus, direct bijgewerkt via de betaal-webhook.'],
     };
     $('pageTitle').textContent = titles[btn.dataset.tab][0];
     $('pageSubtitle').textContent = titles[btn.dataset.tab][1];
@@ -151,6 +152,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     if (btn.dataset.tab === 'verify') loadVerifyConfig();
     if (btn.dataset.tab === 'rules') loadRulesConfig();
     if (btn.dataset.tab === 'shop') loadShop();
+    if (btn.dataset.tab === 'orders') loadOrders(true);
   });
 });
 
@@ -1043,7 +1045,7 @@ function renderProductList(products) {
         <div><strong>${escapeHtml(p.name)}</strong> ${p.active ? '' : '<span class="hint">(inactief)</span>'} ${
           p.version ? `<span class="product-version">v${escapeHtml(p.version)}</span>` : ''
         }</div>
-        <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}${p.priceCents > 0 && !p.tebexPackageId ? ' · <span style="color:var(--danger)">⚠️ geen Tebex-ID</span>' : ''}</div>
+        <div class="muted" style="font-size:13px;">${p.priceCents === 0 ? 'Gratis' : formatPriceAdmin(p.priceCents, p.currency)}${p.hasFile ? '' : ' · <span style="color:var(--danger)">⚠️ geen bestand</span>'}</div>
         <div class="product-photos photo-strip"></div>
       </div>
       <div class="product-admin-actions">
@@ -1164,7 +1166,6 @@ function setupProductEdit(row, product) {
         <div><label>Prijs <span class="hint">0 = gratis</span></label><input data-f="price" type="number" step="0.01" min="0" /></div>
         <div><label>Valuta</label><select data-f="currency"><option value="eur">EUR</option><option value="usd">USD</option><option value="gbp">GBP</option></select></div>
         <div><label>Categorie</label><input data-f="category" type="text" maxlength="60" /></div>
-        <div><label>Tebex package-ID</label><input data-f="tebex" type="text" inputmode="numeric" maxlength="20" /></div>
         <div><label>Versie</label><input data-f="version" type="text" maxlength="100" /></div>
       </div>
       <label>Changelog</label><textarea data-f="changelog" rows="3" maxlength="4000"></textarea>
@@ -1179,7 +1180,6 @@ function setupProductEdit(row, product) {
     f('price').value = ((product.priceCents || 0) / 100).toFixed(2);
     f('currency').value = product.currency || 'eur';
     f('category').value = product.category || '';
-    f('tebex').value = product.tebexPackageId || '';
     f('version').value = product.version || '';
     f('changelog').value = product.changelog || '';
     panel.classList.remove('hidden');
@@ -1203,7 +1203,6 @@ function setupProductEdit(row, product) {
           priceCents: Math.round(price * 100),
           currency: f('currency').value,
           category: f('category').value.trim(),
-          tebexPackageId: f('tebex').value.trim(),
           version: f('version').value.trim() || null,
           changelog: f('changelog').value.trim() || null,
         });
@@ -1537,7 +1536,6 @@ $('addProductBtn').addEventListener('click', async () => {
       version: $('sp_version').value.trim() || null,
       changelog: $('sp_changelog').value.trim() || null,
       category: $('sp_category').value.trim() || null,
-      tebexPackageId: $('sp_tebex').value.trim() || null,
     });
 
     try {
@@ -1575,7 +1573,6 @@ $('addProductBtn').addEventListener('click', async () => {
     $('sp_version').value = '';
     $('sp_changelog').value = '';
     $('sp_category').value = '';
-    $('sp_tebex').value = '';
     newProductPhotos = [];
     renderNewPhotoPreview();
     $('sp_file').value = '';
@@ -1617,3 +1614,190 @@ $('addProductBtn').addEventListener('click', async () => {
     showScreen('picker');
   }
 })();
+
+
+// ---- Bestellingen & betaalstatussen ----
+const ORDER_PAGE_SIZE = 25;
+const orderView = { offset: 0, total: 0, status: '', q: '', open: null };
+
+const ORDER_STATUS_LABELS = { pending: 'Wachten op betaling', paid: 'Betaald', failed: 'Mislukt', canceled: 'Geannuleerd' };
+
+function orderMoney(cents, currency) {
+  return new Intl.NumberFormat('nl-NL', { style: 'currency', currency: String(currency || 'eur').toUpperCase() }).format((cents || 0) / 100);
+}
+
+function orderDate(ts) {
+  return ts ? new Date(ts).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+}
+
+function orderBadge(status) {
+  return `<span class="order-badge order-badge-${escapeHtml(status)}">${escapeHtml(ORDER_STATUS_LABELS[status] || status)}</span>`;
+}
+
+function renderOrderStats(counts, revenue) {
+  const revenueText = Object.keys(revenue).length
+    ? Object.entries(revenue).map(([cur, cents]) => orderMoney(cents, cur)).join(' · ')
+    : orderMoney(0, 'eur');
+  const stat = (label, value, tone) => `<div class="stat stat-${tone}"><div class="stat-value">${escapeHtml(String(value))}</div><div class="stat-label">${escapeHtml(label)}</div></div>`;
+  $('orderStats').innerHTML = [
+    stat('Omzet (betaald)', revenueText, 'paid'),
+    stat('Betaald', counts.paid, 'paid'),
+    stat('Wachten op betaling', counts.pending, 'pending'),
+    stat('Mislukt', counts.failed, 'failed'),
+    stat('Geannuleerd', counts.canceled, 'canceled'),
+  ].join('');
+}
+
+async function loadOrders(reset) {
+  if (reset) {
+    orderView.offset = 0;
+    orderView.open = null;
+  }
+  const list = $('orderList');
+  try {
+    const qs = new URLSearchParams({ limit: String(ORDER_PAGE_SIZE), offset: String(orderView.offset) });
+    if (orderView.status) qs.set('status', orderView.status);
+    if (orderView.q) qs.set('q', orderView.q);
+    const data = await api('GET', `/store/admin/orders/${state.guildId}?${qs}`);
+    orderView.total = data.total;
+    renderOrderStats(data.counts, data.revenue);
+
+    list.textContent = '';
+    if (data.orders.length === 0) {
+      list.innerHTML = '<div class="empty-state">Geen bestellingen gevonden.</div>';
+    }
+    data.orders.forEach((o) => list.appendChild(orderRow(o)));
+
+    const from = data.total === 0 ? 0 : orderView.offset + 1;
+    const to = Math.min(orderView.offset + data.orders.length, data.total);
+    $('orderPageInfo').textContent = `${from}–${to} van ${data.total}`;
+    $('orderPrevBtn').disabled = orderView.offset === 0;
+    $('orderNextBtn').disabled = orderView.offset + ORDER_PAGE_SIZE >= data.total;
+  } catch (err) {
+    list.innerHTML = `<div class="empty-state">Fout bij laden: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function orderRow(o) {
+  const row = document.createElement('div');
+  row.className = 'order-admin-row';
+
+  const summary = o.items.map((i) => `${i.quantity}× ${i.name}`).join(', ');
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'order-admin-head';
+  head.innerHTML = `
+    <span class="order-col-id"><strong>${escapeHtml(o.orderNumber)}</strong><span class="muted">${escapeHtml(orderDate(o.createdAt))}</span></span>
+    <span class="order-col-status">${orderBadge(o.status)}</span>
+    <span class="order-col-customer">${escapeHtml(o.discordUsername || o.discordId)}<span class="muted">${escapeHtml(summary)}</span></span>
+    <span class="order-col-total">${escapeHtml(orderMoney(o.totalCents, o.currency))}</span>`;
+  row.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'order-admin-detail hidden';
+  row.appendChild(body);
+
+  head.addEventListener('click', async () => {
+    const opening = body.classList.contains('hidden');
+    document.querySelectorAll('.order-admin-detail').forEach((d) => d.classList.add('hidden'));
+    if (!opening) return;
+    body.classList.remove('hidden');
+    await loadOrderDetail(o.orderNumber, body);
+  });
+
+  if (orderView.open === o.orderNumber) {
+    body.classList.remove('hidden');
+    loadOrderDetail(o.orderNumber, body);
+  }
+  return row;
+}
+
+async function loadOrderDetail(orderNumber, body) {
+  orderView.open = orderNumber;
+  body.innerHTML = '<div class="muted">Laden…</div>';
+  try {
+    const { order: o, events } = await api('GET', `/store/admin/orders/${state.guildId}/${encodeURIComponent(orderNumber)}`);
+
+    const lines = o.items
+      .map((i) => `<tr><td>${escapeHtml(i.name)}${i.version ? ` <span class="muted">v${escapeHtml(i.version)}</span>` : ''}</td><td class="num">${i.quantity}</td><td class="num">${escapeHtml(orderMoney(i.unitCents, o.currency))}</td><td class="num">${escapeHtml(orderMoney(i.finalCents * i.quantity, o.currency))}</td></tr>`)
+      .join('');
+
+    const evRows = events.length
+      ? events.map((e) => `<li><span class="muted">${escapeHtml(orderDate(e.createdAt))}</span> <strong>${escapeHtml(e.event)}</strong> <span class="muted">(${escapeHtml(e.source)})</span>${e.detail ? ` — ${escapeHtml(e.detail)}` : ''}</li>`).join('')
+      : '<li class="muted">Nog geen betaalgebeurtenissen.</li>';
+
+    body.innerHTML = `
+      <div class="order-detail-grid">
+        <div>
+          <table class="order-lines">
+            <thead><tr><th>Product</th><th class="num">Aantal</th><th class="num">Prijs</th><th class="num">Totaal</th></tr></thead>
+            <tbody>${lines}</tbody>
+            <tfoot>
+              <tr><td colspan="3">Subtotaal</td><td class="num">${escapeHtml(orderMoney(o.subtotalCents, o.currency))}</td></tr>
+              ${o.discountCents > 0 ? `<tr><td colspan="3">Korting${o.discountCode ? ` (${escapeHtml(o.discountCode)})` : ''}</td><td class="num">−${escapeHtml(orderMoney(o.discountCents, o.currency))}</td></tr>` : ''}
+              <tr class="order-total"><td colspan="3">Totaal</td><td class="num">${escapeHtml(orderMoney(o.totalCents, o.currency))}</td></tr>
+            </tfoot>
+          </table>
+        </div>
+        <dl class="order-meta">
+          <dt>Status</dt><dd>${orderBadge(o.status)}</dd>
+          <dt>Klant</dt><dd>${escapeHtml(o.discordUsername || '—')} <span class="muted">${escapeHtml(o.discordId)}</span></dd>
+          <dt>Aangemaakt</dt><dd>${escapeHtml(orderDate(o.createdAt))}</dd>
+          <dt>Betaald op</dt><dd>${escapeHtml(orderDate(o.paidAt))}</dd>
+          <dt>Methode</dt><dd>${escapeHtml(o.method || '—')}</dd>
+          <dt>Provider</dt><dd>${escapeHtml(o.provider)}${o.providerPaymentId ? ` <span class="muted">${escapeHtml(o.providerPaymentId)}</span>` : ''}</dd>
+          <dt>Providerstatus</dt><dd>${escapeHtml(o.providerStatus || '—')}</dd>
+        </dl>
+      </div>
+      ${o.note ? `<div class="order-note">⚠️ ${escapeHtml(o.note)}</div>` : ''}
+      <div class="order-events"><h3>Betaallogboek</h3><ul>${evRows}</ul></div>
+      ${o.provider === 'mollie' && o.providerPaymentId ? '<div class="save-bar"><button class="btn btn-ghost btn-small" data-sync type="button">↻ Status bij Mollie controleren</button><span class="save-status" data-sync-status></span></div>' : ''}`;
+
+    const syncBtn = body.querySelector('[data-sync]');
+    if (syncBtn) {
+      syncBtn.addEventListener('click', async () => {
+        const status = body.querySelector('[data-sync-status]');
+        syncBtn.disabled = true;
+        status.textContent = 'Bezig…';
+        try {
+          await api('POST', `/store/admin/orders/${state.guildId}/${encodeURIComponent(orderNumber)}/sync`);
+          await loadOrders(false);
+        } catch (err) {
+          status.textContent = `❌ ${err.message}`;
+          status.style.color = 'var(--danger)';
+          syncBtn.disabled = false;
+        }
+      });
+    }
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state">Fout bij laden: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+let orderSearchTimer = null;
+$('orderStatusFilter').addEventListener('change', (e) => { orderView.status = e.target.value; loadOrders(true); });
+$('orderSearch').addEventListener('input', (e) => {
+  clearTimeout(orderSearchTimer);
+  orderSearchTimer = setTimeout(() => { orderView.q = e.target.value.trim(); loadOrders(true); }, 300);
+});
+$('orderRefreshBtn').addEventListener('click', () => loadOrders(false));
+$('orderPrevBtn').addEventListener('click', () => { orderView.offset = Math.max(0, orderView.offset - ORDER_PAGE_SIZE); orderView.open = null; loadOrders(false); });
+$('orderNextBtn').addEventListener('click', () => { orderView.offset += ORDER_PAGE_SIZE; orderView.open = null; loadOrders(false); });
+$('orderExportBtn').addEventListener('click', async () => {
+  const btn = $('orderExportBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/store/admin/orders-export/${state.guildId}`, { credentials: 'include' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: `aurex-bestellingen-${new Date().toISOString().slice(0, 10)}.csv` });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Exporteren mislukt: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});

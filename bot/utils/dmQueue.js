@@ -2,7 +2,7 @@
 // Polling loop that empties the `pending_dms` queue the API fills (see
 // api/routes/store.js and api/routes/storeWebhook.js). The API has no
 // Discord connection of its own, so this is how a "Stuur update" click
-// in the dashboard, or a completed Tebex payment, actually turns into a
+// in the dashboard, or a completed payment, actually turns into a
 // real DM — the bot is the only part of this app that can send one.
 
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');

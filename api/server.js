@@ -18,6 +18,9 @@ const authRoutes = require('./routes/auth');
 const discordGuildsRoutes = require('./routes/discordGuilds');
 const storeRoutes = require('./routes/store');
 const tebexWebhookHandler = require('./routes/storeWebhook');
+const paymentWebhookHandler = require('./routes/paymentWebhook');
+const mollie = require('./utils/mollie');
+const { startReconciler } = require('./utils/orders');
 const { initDb } = require('./database');
 const config = require('./config');
 const { requireApiKey } = require('./middleware/auth');
@@ -49,9 +52,13 @@ if (!config.discord.clientId || !config.discord.clientSecret) {
   console.log(`[AUTH] Discord OAuth redirect-URI: ${config.discord.redirectUri || '(niet ingesteld — PUBLIC_URL ontbreekt)'}`);
 }
 
-if (!config.tebex.publicToken || !config.tebex.webhookSecret) {
+if (!mollie.isConfigured()) {
   console.warn(
-    '[CONFIG WARNING] TEBEX_PUBLIC_TOKEN / TEBEX_WEBHOOK_SECRET ontbreken — de webshop-checkout en betaalbevestiging werken dan niet.'
+    '[CONFIG WARNING] MOLLIE_API_KEY ontbreekt — betaalde bestellingen in de webshop kunnen dan niet worden afgerekend (gratis producten werken wel).'
+  );
+} else if (!config.publicUrl || !/^https:\/\//i.test(config.publicUrl)) {
+  console.warn(
+    '[CONFIG WARNING] PUBLIC_URL is geen https-adres — Mollie kan de betaal-webhook dan niet aanroepen. Betalingen worden dan alleen via de achtergrondcontrole en bij het terugkeren van de klant bijgewerkt.'
   );
 }
 
@@ -97,6 +104,9 @@ if (config.shopOrigin) {
 // the regular /store router (which uses express.json() like every other
 // route here).
 app.post('/store/webhook', express.raw({ type: '*/*' }), tebexWebhookHandler);
+
+// Mollie-betaalwebhook (form-urlencoded, alleen een payment-id — zie routes/paymentWebhook.js).
+app.post('/store/payments/webhook', express.urlencoded({ extended: false, limit: '10kb' }), paymentWebhookHandler);
 
 // Bestandsupload (base64 in JSON) heeft een grotere limiet nodig dan de rest.
 // Moet VÓÓR de globale express.json() staan; body-parser slaat een al
@@ -191,6 +201,7 @@ app.use((err, req, res, next) => {
 
   app.listen(PORT, () => {
     console.log(`[API] Aurex | Development API luistert op poort ${PORT}`);
+    startReconciler();
     resolveReady();
   });
 })();

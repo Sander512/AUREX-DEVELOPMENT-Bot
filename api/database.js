@@ -354,6 +354,50 @@ CREATE INDEX IF NOT EXISTS idx_bundles_guild ON bundles(guild_id, active);
 CREATE INDEX IF NOT EXISTS idx_purchases_product_status ON purchases(product_id, status);
 CREATE INDEX IF NOT EXISTS idx_purchases_discord_guild ON purchases(discord_id, guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_pending_dms_status ON pending_dms(status, created_at);
+
+-- Eigen checkout: één rij per bestelling, los van de betaalprovider. De status wordt
+-- uitsluitend door de provider-webhook (of een server-side status-check) gezet, nooit door
+-- de browser. status: pending (wachten op betaling) | paid | failed | canceled.
+-- purchases.order_id verwijst naar orders.id; items is een JSON-snapshot van wat er besteld is.
+CREATE TABLE IF NOT EXISTS orders (
+  id TEXT PRIMARY KEY,
+  order_number TEXT NOT NULL UNIQUE,
+  guild_id TEXT NOT NULL,
+  discord_id TEXT NOT NULL,
+  discord_username TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  provider TEXT NOT NULL DEFAULT 'mollie',
+  provider_payment_id TEXT UNIQUE,
+  provider_status TEXT,
+  provider_method TEXT,
+  checkout_url TEXT,
+  subtotal_cents INTEGER NOT NULL,
+  discount_code TEXT,
+  discount_cents INTEGER NOT NULL DEFAULT 0,
+  total_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  items TEXT NOT NULL,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  paid_at INTEGER
+);
+
+-- Logboek van alles wat er rond een bestelling gebeurt (webhooks, status-checks,
+-- afwijkende bedragen). Alleen voor het admin-gedeelte; handig bij betalingsvragen.
+CREATE TABLE IF NOT EXISTS payment_events (
+  id TEXT PRIMARY KEY,
+  order_id TEXT,
+  provider_payment_id TEXT,
+  source TEXT NOT NULL,
+  event TEXT NOT NULL,
+  detail TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_guild_status ON orders(guild_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(discord_id, guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_payment_events_order ON payment_events(order_id, created_at);
 `;
 
 // Columns added after the initial release. CREATE TABLE IF NOT EXISTS does

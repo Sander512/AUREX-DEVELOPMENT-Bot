@@ -15,7 +15,7 @@ commands als het dashboard.
 - **📜 Regels** — configureerbare regels-embed, met `/rules-send` te (her)plaatsen;
   nogmaals uitvoeren werkt het bestaande bericht bij in plaats van te spammen.
 - **🛒 Webshop** — publieke `/shop`-pagina met producten, login met Discord, en echte
-  betalingen via Tebex. Beheer producten (prijs, versie, changelog) via
+  betalingen via een eigen checkout (Mollie), met bestellingen en betaalstatussen in het dashboard. Beheer producten (prijs, versie, changelog) via
   het dashboard; met één klik op "Stuur update" krijgt iedereen die het product
   gekocht heeft een DM met de nieuwe versie. Zie "Webshop instellen" hieronder.
 - **Dashboard** — login met Discord, kies een server waar je "Manage Server" rechten
@@ -45,43 +45,55 @@ commands als het dashboard.
   naam getoond. Ongepaste reviews verwijder je in het dashboard (Webshop → Reviews).
 - **Kortingscodes** (dashboard → Webshop → Kortingscodes): percentage of vast bedrag, optioneel
   maximaal aantal keer en einddatum. Elke koper kan een code één keer gebruiken; een code telt pas
-  mee zodra er echt betaald is. 100% korting rekent zonder Tebex af.
-- **Bundels** staan uit sinds de overstap naar Tebex: Tebex rekent vaste prijzen per package af en
-  kan een eigen bundelkorting niet meekrijgen. Wil je een bundel, maak er dan een eigen package van in Tebex.
-- Een kortingscode gaat als **Tebex-coupon** mee naar de betaalpagina. Maak dezelfde code (zelfde
-  naam en korting) dus ook aan in je Tebex-panel; bestaat hij daar niet, dan weigert de checkout de code.
-  De server rekent de korting zelf uit (`api/utils/pricing.js`) voor de winkelwagen; Tebex rekent de echte betaling af.
+  mee zodra er echt betaald is. 100% korting rekent zonder betaalprovider af.
+- **Bundels** staan voorlopig uit (de bundelkorting is nog niet aangesloten op de nieuwe checkout).
+- Een kortingscode hoef je nergens anders aan te maken: de server rekent de korting zelf uit
+  (`api/utils/pricing.js`) en dat korting-bedrag is precies wat de klant bij Mollie betaalt.
 - Na korting moet het totaal minimaal 0,50 zijn, of precies 0 (gratis).
 - Labels op de kaarten: **Nieuw** (jonger dan 14 dagen), **Gratis**, **Bestseller** (meeste verkopen).
   Met de muis over een kaart zie je de tweede foto.
 - Nieuwe tabellen (`reviews`, `bundles`, `discount_codes`) en kolommen worden bij het starten
   automatisch aangemaakt; er hoeft niets handmatig te gebeuren.
 
-## Webshop instellen (Tebex)
+## Webshop & eigen checkout (Mollie)
 
-De webshop is een LOS project (map `aurex-shop-site`, bedoeld voor Vercel) en
-praat via `SHOP_ORIGIN` + CORS met deze bot/API. Zie de README in die map.
-Zonder Tebex-configuratie werkt de shop ook al (producten zichtbaar), maar "Kopen" van een betaald product geeft dan een duidelijke foutmelding.
-Om echte betalingen te accepteren:
+De klant kiest producten op je eigen website, ziet een afrekenpagina (`#/checkout`) met productnaam,
+prijs, aantal en totaalbedrag, en gaat vanaf daar naar de beveiligde betaalpagina van Mollie. Daarna
+komt hij terug op een statuspagina (`#/order/<order-ID>`) die vanzelf bijwerkt.
 
-1. Maak een [Tebex](https://www.tebex.io)-webstore aan en maak per betaald product een **package**
-   (type: eenmalige betaling, zonder game-deliverables of commando's — het bestand sturen wij zelf per DM).
-   Zet de prijs van het package gelijk aan de prijs in het dashboard: klanten betalen de Tebex-prijs.
-2. Ga naar **Developers → API Keys** en kopieer de **Public token** (Headless API) naar `TEBEX_PUBLIC_TOKEN`.
-3. Deploy de app eerst zo (zonder webhook secret) zodat je de publieke URL hebt.
-4. Ga naar **Developers → Webhooks → Endpoints → Add Endpoint**, vul als URL in:
-   `<PUBLIC_URL>/store/webhook` en vink minimaal `payment.completed` aan. Zet de **webhook secret**
-   van dat endpoint in `TEBEX_WEBHOOK_SECRET`, herstart de service en klik in Tebex op **Validate**.
-5. Vul bij elk betaald product het **Tebex package-ID** in (dashboard → Webshop, of `/product add|update tebex_id`).
-   Betaalde producten zonder package-ID kunnen niet gekocht worden; ze staan met ⚠️ in de lijst.
-6. Voeg producten toe via het dashboard-tabblad "🛒 Webshop", en deel de
-   shop-link (staat bovenaan dat tabblad) met je klanten.
-7. Test een aankoop (Tebex heeft een testmodus voor betalingen) voordat je live gaat.
+**Flow**
 
-Betalingen worden pas als "voltooid" geregistreerd zodra Tebex's webhook (`payment.completed`,
-met geldige `X-Signature`) bevestigt dat er echt betaald is — niet zodra iemand terug op de site landt.
-Dat voorkomt dat iemand een aankoop kan vervalsen door gewoon naar de "gelukt"-pagina te surfen.
-Terugbetalingen en disputes worden alleen gelogd; downloads trek je zelf in.
+1. `POST /store/checkout` — de server berekent het bedrag zelf (nooit uit de browser), legt de bestelling
+   vast met een automatisch order-ID (`AX-YYMMDD-XXXXXX`, status *wachten op betaling*) en maakt de betaling
+   aan bij Mollie. De browser krijgt alleen de betaal-link terug.
+2. Mollie roept `POST <PUBLIC_URL>/store/payments/webhook` aan zodra de status verandert. De server vertrouwt de
+   webhook niet blind: hij haalt de betaling zelf op bij Mollie (met de secret key) en controleert status én bedrag.
+3. Bij *betaald* gebeurt precies één keer: aankoop afronden, kortingscode tellen en de bestel-DM met bestand
+   versturen. Dubbele of gelijktijdige webhooks leveren dus nooit dubbel.
+4. De statuspagina vraagt ook zelf (server-side, max. eens per 5 s) de status op, en een achtergrondtaak
+   controleert elke 10 minuten openstaande bestellingen. Een gemiste webhook leidt dus niet tot een betaalde
+   maar niet-geleverde bestelling.
+
+**Betaalstatussen**: `Wachten op betaling` → `Betaald` · `Mislukt` (mislukt of verlopen) · `Geannuleerd`.
+
+**Admin**: dashboard → tabblad **💳 Bestellingen** — omzet en aantallen per status, zoeken/filteren, detail met
+producten, bedragen, betaalmethode, Mollie-ID en een betaallogboek, knop *Status bij Mollie controleren* en
+CSV-export. Alleen toegankelijk met je Discord-login (Manage Server) of de bot-API-key.
+
+**Instellen**
+
+1. Maak een [Mollie](https://www.mollie.com)-account, ga naar **Developers → API keys** en zet de **test key**
+   (`test_...`) in `MOLLIE_API_KEY` op Render (Environment). Zet `PUBLIC_URL` op je https-adres en
+   `SHOP_ORIGIN` op de URL van de shop-site.
+2. Activeer in Mollie de betaalmethodes die je wilt (iDEAL, creditcard, PayPal, ...).
+3. Redeploy en doe een testbetaling (in testmodus kies je op de Mollie-pagina zelf de uitkomst:
+   betaald / mislukt / geannuleerd / verlopen). Controleer dat de bestelling in het dashboard op *Betaald* springt
+   en de DM binnenkomt.
+4. Pas daarna de **live key** (`live_...`) invullen en je Mollie-profiel laten goedkeuren.
+
+Producten hebben geen betaalprovider-ID meer nodig; alleen naam, prijs en bestand. Het oude Tebex-webhook-endpoint
+(`/store/webhook`) blijft staan zodat bestellingen die nog bij Tebex openstonden kunnen afronden; het wordt niet
+meer gebruikt voor nieuwe bestellingen.
 
 ## Projectstructuur
 
