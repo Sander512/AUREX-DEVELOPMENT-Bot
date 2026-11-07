@@ -7,6 +7,7 @@ const api = require('./api');
 const embeds = require('./embeds');
 const logger = require('./logger');
 const { generateTranscript, ticketDeleteRow, hexToInt } = require('./tickets');
+const { scheduleTicketAutoDelete } = require('./ticketAutoDelete');
 
 /**
  * Locks a ticket channel, records the close in the database, generates a
@@ -14,6 +15,7 @@ const { generateTranscript, ticketDeleteRow, hexToInt } = require('./tickets');
  */
 async function closeTicketChannel({ channel, ticket, config, closedBy, reason }) {
   await api.closeTicket(channel.id, closedBy.id, reason);
+  scheduleTicketAutoDelete(channel.client, channel.id, Date.now());
 
   // Prevent the opener (and anyone without manage-channel perms) from
   // posting further, but keep the channel visible so history can be read.
@@ -34,7 +36,7 @@ async function closeTicketChannel({ channel, ticket, config, closedBy, reason })
         { name: 'Reden', value: reason || 'Geen reden opgegeven' },
       ],
     })
-    .setDescription('Dit kanaal is vergrendeld. Een teamlid met de juiste rechten kan het hieronder definitief verwijderen.');
+    .setDescription('Dit kanaal is vergrendeld en wordt automatisch binnen 5 minuten verwijderd.');
 
   await channel.send({ embeds: [closedEmbed], components: [ticketDeleteRow()] }).catch(() => {});
 
