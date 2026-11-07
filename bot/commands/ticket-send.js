@@ -46,7 +46,10 @@ module.exports = {
 
       const panelEmbed = embeds.custom({
         title: config.panelTitle,
-        description: config.panelDescription,
+        description: [
+          config.panelDescription,
+          ...types.map((type) => `${type.emoji || '🎫'} **${type.label}**\n${type.description || ''}`),
+        ].filter(Boolean).join('\n\n').slice(0, 4096),
         color: hexToInt(config.panelColor),
         image: config.panelImage,
         thumbnail: config.panelThumbnail,
