@@ -8,6 +8,7 @@ const embeds = require('./embeds');
 const logger = require('./logger');
 const { generateTranscript, ticketDeleteRow, hexToInt } = require('./tickets');
 const { scheduleTicketAutoDelete } = require('./ticketAutoDelete');
+const CLOSED_TICKET_ARCHIVE_CHANNEL_ID = '1553697334477459617';
 
 /**
  * Locks a ticket channel, records the close in the database, generates a
@@ -17,10 +18,9 @@ async function closeTicketChannel({ channel, ticket, config, closedBy, reason })
   await api.closeTicket(channel.id, closedBy.id, reason);
   scheduleTicketAutoDelete(channel.client, channel.id, Date.now());
 
-  // Prevent the opener (and anyone without manage-channel perms) from
-  // posting further, but keep the channel visible so history can be read.
+  // Hide closed tickets from the opener while leaving them available to staff.
   await channel.permissionOverwrites
-    .edit(ticket.openerId, { SendMessages: false, AddReactions: false })
+    .edit(ticket.openerId, { ViewChannel: false, SendMessages: false, AddReactions: false })
     .catch(() => {});
 
   const transcript = await generateTranscript(channel, { ticketNumber: ticket.ticketNumber }).catch(() => null);
@@ -36,11 +36,12 @@ async function closeTicketChannel({ channel, ticket, config, closedBy, reason })
         { name: 'Reden', value: reason || 'Geen reden opgegeven' },
       ],
     })
-    .setDescription('Dit kanaal is vergrendeld en wordt automatisch binnen 5 minuten verwijderd.');
+    .setDescription('Dit kanaal is vergrendeld. De transcript is opgeslagen in het archiefkanaal; dit kanaal wordt binnen 5 minuten verwijderd.')
+    .setFooter({ text: `AUREX_CLOSED_TICKET:${channel.id}` });
 
   await channel.send({ embeds: [closedEmbed], components: [ticketDeleteRow()] }).catch(() => {});
 
-  const targetChannelId = config.transcriptChannelId || config.logChannelId;
+  const targetChannelId = CLOSED_TICKET_ARCHIVE_CHANNEL_ID;
   if (targetChannelId) {
     try {
       const logChannel = await channel.client.channels.fetch(targetChannelId);
@@ -48,6 +49,7 @@ async function closeTicketChannel({ channel, ticket, config, closedBy, reason })
         await logChannel.send({
           embeds: [closedEmbed],
           files: transcript ? [transcript] : [],
+          allowedMentions: { parse: [] },
         });
       }
     } catch (err) {

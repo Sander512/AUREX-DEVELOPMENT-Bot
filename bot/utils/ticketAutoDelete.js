@@ -27,4 +27,11 @@ function scheduleTicketAutoDelete(client, channelId, closedAt = Date.now()) {
   timers.set(channelId, { deleteAt, timer });
 }
 
-module.exports = { DELETE_AFTER_MS, scheduleTicketAutoDelete };
+function cancelTicketAutoDelete(channelId) {
+  const current = timers.get(channelId);
+  if (!current) return;
+  clearTimeout(current.timer);
+  timers.delete(channelId);
+}
+
+module.exports = { DELETE_AFTER_MS, scheduleTicketAutoDelete, cancelTicketAutoDelete };
